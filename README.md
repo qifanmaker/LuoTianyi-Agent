@@ -28,14 +28,11 @@ git clone https://github.com/qifanmaker/LuoTianyi-Agent.git
 cd LuoTianyi-Agent
 ```
 
-### 2\. Python 环境
+### 2\. 安装依赖
 
-本项目依赖多个 Python 库，请确保您的环境中安装了所需的依赖。
-
-  * **（待补充）** 由于项目未提供 `requirements.txt`，请根据代码中的 `import` 语句手动安装必要的库，例如：
-      * `openai` 或其他 LLM 相关的库
-      * `pyaudio` 或其他语音输入/输出库
-      * `numpy`, `scipy` 等科学计算库
+```bash
+pip install -r requirements.txt
+```
 
 ### 3\. 模型配置
 
