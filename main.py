@@ -22,11 +22,18 @@ from openai import OpenAI
 import audio_player
 from voice_listener import VoiceListener
 from response_processor import ResponseProcessor
-import re, os
+import re, json
  
 
-if (True): # 隐藏 api_key
-    client = OpenAI(api_key="sk-f77f1e8f25a44c398128e45fc4af5d7d", base_url="https://api.deepseek.com")
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+api_key = config.get("ApiKey")
+
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://api.deepseek.com"
+)
 
 songs_list=[ # 支持的歌单
     "上山岗.wav"
