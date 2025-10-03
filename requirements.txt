@@ -1,0 +1,13 @@
+numpy
+
+PyAudio
+SpeechRecognition
+
+torch
+torchaudio
+librosa
+
+openai
+requests
+
+live2d-py
