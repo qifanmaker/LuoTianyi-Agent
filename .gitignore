@@ -3,3 +3,5 @@
 /.cph
 /voice
 config.json
+/test
+**/.DS_Store
