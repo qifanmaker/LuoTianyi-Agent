@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 您需要准备并配置以下模型或资源：
 
-  * **LLM API Key:** 配置您选择的大型语言模型（如 GPT-3.5/4 或其他开源模型）的 API 密钥和调用接口。
+  * **LLM:** 按照 `config.example.json` 配置您选择的大型语言模型（如 GPT-3.5/4 或其他开源模型），并保存在 `config.json` 中。
   * **GPT-SoVITS 模型:** 将洛天依声线的模型文件（如 `.pth`, `.pt` 文件）放置在指定位置。并启用 TTS 推理 WebUI，开启 http://localhost:9872/ 的 api 接口。
 
 ## 🚀 使用方法

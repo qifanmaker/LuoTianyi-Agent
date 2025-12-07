@@ -28,16 +28,18 @@ import re, json
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-api_key = config.get("ApiKey")
+api_key = config.get("API_KEY")
+base_url = config.get("BASE_URL")
+model_name = config.get("MODEL")
 
 client = OpenAI(
     api_key=api_key,
-    base_url="https://api.deepseek.com"
+    base_url=base_url
 )
 
-songs_list=[ # 支持的歌单
-    "上山岗.wav"
-]
+# 自动获取 /songs 文件夹下的所有文件作为歌单
+songs_dir = "songs"
+songs_list = [f for f in os.listdir(songs_dir) if os.path.isfile(os.path.join(songs_dir, f))]
 
 messages=[ # prompt
         {"role": "system", "content": f"""
@@ -63,8 +65,7 @@ messages=[ # prompt
 def usersay(content):
     messages.append({"role": "user", "content": content})
     response = client.chat.completions.create(
-        model="deepseek-chat",
-        # model="gpt-5",
+        model=model_name,
         messages=messages,
         stream=False,
         temperature=1.3,
