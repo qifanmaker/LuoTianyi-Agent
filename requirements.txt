@@ -6,3 +6,4 @@ requests
 PyOpenGL
 live2d-py
 gradio_client
+pygame
