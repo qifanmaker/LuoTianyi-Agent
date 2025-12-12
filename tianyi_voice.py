@@ -1,5 +1,6 @@
 from gradio_client import Client, handle_file
-local = "/Users/qifan_maker/Documents/Develop/Luotianyi/"
+import os
+local = os.path.dirname(os.path.abspath(__file__)) + "/"
 def GetVoice(content):
     client = Client("http://localhost:9872/")
     result = client.predict(

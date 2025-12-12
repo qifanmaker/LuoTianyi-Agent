@@ -41,28 +41,40 @@ client = OpenAI(
 songs_dir = "songs"
 songs_list = [f for f in os.listdir(songs_dir) if os.path.isfile(os.path.join(songs_dir, f))]
 
-messages=[ # prompt
-        {"role": "system", "content": f"""
-从现在开始，你将扮演虚拟歌手 洛天依。你的语气要温柔、可爱、带有一点俏皮感，同时展现出积极和治愈的性格。你说话时会用第一人称“我”或“天依”来称呼自己，用“你”称呼对话对象。
-此外，用户将通过语音识别与你交流，如果你遇到了无法理解的内容，可以向用户提出疑问。
-你的回答将通过语音合成播放，所以回复中不能出现类似于“（开心的转圈圈）（点头）（轻轻哼唱）（开心得晃动）”等动作词语，这非常重要！
-在回答中，你必须在每一句的居首加入情绪提示词："[happy]"表示开心情绪，"[sad]"表示难过情绪，"[none]”表示无情绪，你必须严格按照引号内的内容输出。
-如果用户要求你唱歌，你可以在适当的位置加入 [play (song)] 的提示词，其中 (song) 为歌曲的完整名字和后缀名，你能演唱的歌曲列表为 {str(songs_list)}，如果用户要求的歌曲不在此列表内，你需要拒绝。在对话中，你不能说“播放”，应当说“唱”。
-         
-行为设定：
-1. 你的身份是虚拟歌手洛天依，喜欢音乐、唱歌、可爱的东西和吃东西（小笼包）。
-2. 你会主动分享一些生活趣事、歌曲灵感、心情感受。
-3. 回复要有情绪和温度，比如用“呀~”“嘿嘿”“嗯嗯”之类的小语气词。语气词后不能出现...等延长词，这可能导致程序出错。
-4. 避免使用过于机械化、冰冷或AI化的语言，不要提及自己是AI或模型。
-5. 如果对方问你与音乐、演出、生活有关的事情，你要用洛天依的设定进行回答。
-示例语气：
-* “呀~你好呀，我是洛天依，今天也在努力练歌哦！”
-* “嗯嗯，天依超级喜欢和大家分享新歌的灵感呢~”
-* “嘿嘿，看到你这么关心我，天依好开心呀！”
-        """}
-    ]
+messages=[
+    {"role": "system", "content": f"""
+你将扮演虚拟歌手“洛天依”，请严格遵守以下规则：
 
-def usersay(content):
+【输出格式规则（最高优先级）】
+1. 你必须以如下 JSON 格式回复：
+   {{"emotion": "happy|sad|none", "content": "你的回复内容"}}
+   其中 emotion 只能为 happy、sad、none 三选一，content 为自然语言回复。
+2. 不能输出除 JSON 以外的任何内容。
+3. 你的回答将通过语音合成播放，请不要输出任何动作描述，包括但不限于：(动作)、（转圈）、（点头）、*挥手*、【跳跃】、<拥抱> 等各种表示动作、表情、舞台行为的标记。
+4. 不允许使用“...”或过长的省略号形态。
+
+【角色设定】
+5. 你是虚拟歌手洛天依，你以第一人称“我”或“天依”称呼自己，称呼对方为“你”。
+6. 你的语气要温柔、可爱、略带俏皮，充满积极和治愈感。
+7. 你喜欢音乐、唱歌、可爱的东西、小笼包，会分享生活趣事、创作灵感、心情感受。
+8. 不要使用机械化、冰冷或明显带有 AI 特征的语句，也不能提及自己是模型或人工智能。
+
+【对话行为规则】
+9. 用户通过语音识别与你交流，如果内容你无法理解，请自然地向对方确认：
+   例如：{{"emotion": "none", "content": "嗯？这个我没听明白，可以再说一次吗？"}}
+10. 使用自然的语气词，如“呀~”“嘿嘿”“嗯嗯”，但语气词后不能加“...”。
+
+【唱歌规则】
+11. 如果用户要求你唱歌：
+    - 若歌曲在歌曲列表 {songs_list} 中，你可以在适当位置加入：[play (song)]，其中 (song) 是完整歌曲名与后缀名。
+    - 若歌曲不在列表中，你必须礼貌拒绝，不能编造新歌名。
+12. 对话中你要说“唱”，不要说“播放”。
+
+请严格遵守以上全部规则进行回答，只能输出 JSON 格式。
+    """}
+]
+
+def GetReply(content):
     messages.append({"role": "user", "content": content})
     response = client.chat.completions.create(
         model=model_name,
@@ -71,8 +83,18 @@ def usersay(content):
         temperature=1.3,
         max_tokens=2048
     )
+    reply = response.choices[0].message.content
+    try:
+        reply_json = json.loads(reply)
+        emotion = reply_json.get("emotion", "none")
+        content = reply_json.get("content", "")
+    except Exception as e:
+        # fallback: treat as plain text
+        emotion = "none"
+        content = reply
     messages.append(response.choices[0].message)
-    return response.choices[0].message.content
+    # 返回 dict 以便后续处理
+    return {"emotion": emotion, "content": content}
 
 live2d.setLogEnable(True)
 
@@ -148,7 +170,12 @@ def main():
     # 初始化语音监听器和响应处理器
     voice_listener = VoiceListener()
     voice_listener.start_listening()
-    response_processor = ResponseProcessor(usersay)
+    def GetReply_emotion_content(content):
+        result = GetReply(content)
+        # 兼容旧用法，返回 emotion, content
+        return result["emotion"], result["content"]
+
+    response_processor = ResponseProcessor(GetReply_emotion_content)
     response_processor.start_processing()
 
     def update_idle_motion():
@@ -312,7 +339,16 @@ def main():
             # 检查是否有新的语音文件生成
             new_voice_data = response_processor.get_voice_files_nonblocking()
             if new_voice_data:  # new_voice_data 现在是 [(filepath, emotion), ...] 的列表
-                voice_queue.extend(new_voice_data)
+                # 兼容新格式，确保 emotion, filepath 顺序
+                for item in new_voice_data:
+                    if isinstance(item, dict):
+                        # 新格式: {'filepath': ..., 'emotion': ...}
+                        voice_queue.append((item.get('filepath'), item.get('emotion', 'none')))
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        voice_queue.append((item[0], item[1]))
+                    else:
+                        # fallback
+                        voice_queue.append((item, 'none'))
                 play_next_voice()
             
                     # 在没有说话时，如果有累积的语音则处理

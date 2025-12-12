@@ -68,47 +68,85 @@ class ResponseProcessor:
             except queue.Empty:
                 continue
 
-    def _generate_voice_files(self, response_text: str) -> List[Tuple[str, str]]:
-        """生成语音文件
-        
+    def _generate_voice_files(self, response) -> List[Tuple[str, str]]:
+        """生成语音文件，支持 LLM JSON 格式返回
+        response: 可以是 str（老格式），也可以是 dict（新格式），或 emotion/content 字段
         Returns:
             List[Tuple[str, str]]: 每个元素是(文件路径, 情绪标签)的元组
         """
-        # 解析情绪和内容
-        pattern = r'\[(happy|sad|shy|angry)\](.*?)(?=\[(?:happy|sad|shy|angry)\]|$)'
-        sentences = re.findall(pattern, response_text, flags=re.DOTALL)
-        
-        # 存储生成的语音文件及其对应的情绪
+        import json
         voice_data = []
         os.makedirs(self.voice_save_dir, exist_ok=True)
-        
-        for i, (mood, content) in enumerate(sentences, 1):
-            # 检查是否整个句子都是歌曲播放指令
-            if content.strip() == content and re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content):
-                song_file = re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content).group(1)
-                filename = os.path.join(self.song_save_dir, song_file.strip('()'))
-                voice_data.append((filename, mood))
-                continue
-            
-            # 对于包含歌曲播放指令的句子，需要分开处理
-            parts = re.split(r'(\[play\s+[^\]]+\])', content)
-            for part in parts:
-                if part.strip():  # 忽略空字符串
-                    if re.match(r'^\[play\s+([^\]]+)\]$', part.strip()):
-                        # 这是一个播放指令
-                        song_file = re.match(r'^\[play\s+([^\]]+)\]$', part.strip()).group(1)
+
+        # 1. 新格式：dict、tuple 或 json字符串
+        if isinstance(response, dict):
+            emotion = response.get('emotion', 'none')
+            content = response.get('content', '')
+        elif isinstance(response, (tuple, list)) and len(response) == 2:
+            # 兼容 (emotion, content)
+            emotion, content = response
+        else:
+            # 兼容字符串格式，尝试解析json
+            try:
+                resp_obj = json.loads(response)
+                if isinstance(resp_obj, dict) and 'content' in resp_obj:
+                    emotion = resp_obj.get('emotion', 'none')
+                    content = resp_obj.get('content', '')
+                else:
+                    emotion = 'none'
+                    content = response
+            except Exception:
+                # 老格式，按原有正则分句
+                pattern = r'\[(happy|sad|shy|angry)\](.*?)(?=\[(?:happy|sad|shy|angry)\]|$)'
+                sentences = re.findall(pattern, response, flags=re.DOTALL)
+                for i, (mood, content) in enumerate(sentences, 1):
+                    # 检查是否整个句子都是歌曲播放指令
+                    if content.strip() == content and re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content):
+                        song_file = re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content).group(1)
                         filename = os.path.join(self.song_save_dir, song_file.strip('()'))
                         voice_data.append((filename, mood))
+                        continue
+                    # 对于包含歌曲播放指令的句子，需要分开处理
+                    parts = re.split(r'(\[play\s+[^\]]+\])', content)
+                    for part in parts:
+                        if part.strip():
+                            if re.match(r'^\[play\s+([^\]]+)\]$', part.strip()):
+                                song_file = re.match(r'^\[play\s+([^\]]+)\]$', part.strip()).group(1)
+                                filename = os.path.join(self.song_save_dir, song_file.strip('()'))
+                                voice_data.append((filename, mood))
+                            else:
+                                voice_url = tianyi_voice.GetVoice(part.strip())
+                                r = requests.get(f'http://localhost:9872/file={voice_url}')
+                                r.raise_for_status()
+                                filename = os.path.join(self.voice_save_dir, f"{i:03d}_{len(voice_data):02d}_{mood}.wav")
+                                with open(filename, "wb") as f:
+                                    f.write(r.content)
+                                voice_data.append((filename, mood))
+                                print(f"Saved: {filename} with mood: {mood}")
+                return voice_data
+
+        # 2. 新格式单条（只处理一条 content/emotion）
+        # 检查是否为歌曲播放指令
+        if content.strip() == content and re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content):
+            song_file = re.match(r'^\s*\[play\s+([^\]]+)\]\s*$', content).group(1)
+            filename = os.path.join(self.song_save_dir, song_file.strip('()'))
+            voice_data.append((filename, emotion))
+        else:
+            # 可能包含多个 [play ...] 指令，分割处理
+            parts = re.split(r'(\[play\s+[^\]]+\])', content)
+            for part in parts:
+                if part.strip():
+                    if re.match(r'^\[play\s+([^\]]+)\]$', part.strip()):
+                        song_file = re.match(r'^\[play\s+([^\]]+)\]$', part.strip()).group(1)
+                        filename = os.path.join(self.song_save_dir, song_file.strip('()'))
+                        voice_data.append((filename, emotion))
                     else:
-                        # 这是普通文本，需要生成语音
                         voice_url = tianyi_voice.GetVoice(part.strip())
                         r = requests.get(f'http://localhost:9872/file={voice_url}')
                         r.raise_for_status()
-                        
-                        filename = os.path.join(self.voice_save_dir, f"{i:03d}_{len(voice_data):02d}_{mood}.wav")
+                        filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
                         with open(filename, "wb") as f:
                             f.write(r.content)
-                        voice_data.append((filename, mood))
-                        print(f"Saved: {filename} with mood: {mood}")
-        
+                        voice_data.append((filename, emotion))
+                        print(f"Saved: {filename} with mood: {emotion}")
         return voice_data
