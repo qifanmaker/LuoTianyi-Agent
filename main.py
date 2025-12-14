@@ -343,11 +343,12 @@ def main():
 
     def play_song(song_name):
         """播放歌曲文件（使用audio_player模块，支持口型同步）"""
-        nonlocal is_speaking, current_song_playing, current_wav_handler, current_lip_sync_n
+        nonlocal is_speaking, current_song_playing, current_wav_handler, current_lip_sync_n, all_voices_finished
         if song_name in songs_list:
             song_path = os.path.join("songs", song_name)
             if os.path.exists(song_path):
                 is_speaking = True
+                all_voices_finished = False  # 开始播放歌曲，标记为未完成
                 current_song_playing = song_name
                 # 使用audio_player播放歌曲，支持口型同步
                 current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, song_path)
@@ -356,6 +357,7 @@ def main():
     def play_next_voice():
         """播放下一个语音文件或歌曲"""
         nonlocal current_wav_handler, current_lip_sync_n, is_speaking, last_idle_motion_time, all_voices_finished, current_song_playing
+        print(f"play_next_voice() called: voice_queue={len(voice_queue)}, is_speaking={is_speaking}, current_song_playing={current_song_playing}")
         if voice_queue and not is_speaking and current_song_playing is None:
             is_speaking = True
             all_voices_finished = False  # 开始播放语音，标记为未完成
@@ -380,6 +382,9 @@ def main():
         elif not voice_queue and not is_speaking and current_song_playing is None:
             # 语音队列为空且没有正在播放的语音，标记为所有语音已完成
             all_voices_finished = True
+            # 清空模型文本，使其消失
+            current_model_text = ""
+            print(f"所有语音播放完成，清空模型文本，all_voices_finished={all_voices_finished}")
 
     def on_start_motion_callback(group: str, no: int):
         log.Info("start motion: [%s_%d]" % (group, no))
@@ -532,7 +537,16 @@ def main():
                 is_speaking = False
                 # 如果当前语音播放完毕，设置语音结束时间
                 voice_end_time = time.time()
+                # 如果当前正在播放歌曲，重置歌曲状态
+                if current_song_playing:
+                    print(f"歌曲播放结束: {current_song_playing}")
+                    current_song_playing = None
+                    # 歌曲播放结束后，立即标记所有语音已完成并清空模型文本
+                    all_voices_finished = True
+                    current_model_text = ""
+                    print(f"歌曲播放结束，设置all_voices_finished={all_voices_finished}")
                 # 继续播放队列中的下一个
+                print(f"音频播放结束，调用play_next_voice()，is_speaking={is_speaking}, current_song_playing={current_song_playing}")
                 play_next_voice()
         
         # 更新待机动作
@@ -616,30 +630,39 @@ def main():
         
         # 检查是否显示模型回复
         # 条件：有模型文本，并且（语音还在播放 或 语音结束后的3秒内）
+        should_display_model = False
         if current_model_text:
-            should_display = False
             current_time = time.time()
             
             # 如果语音还在播放，显示文本
             if not all_voices_finished:
-                should_display = True
+                should_display_model = True
             # 如果语音已播放完毕，检查是否在语音结束后的3秒内
             elif voice_end_time > 0 and current_time - voice_end_time < 3.0:
-                should_display = True
+                should_display_model = True
             # 如果既没有语音播放也没有语音结束时间，使用原来的固定时间逻辑
             elif current_time - model_text_display_time < model_text_display_duration:
-                should_display = True
-            
-            if should_display:
-                # 如果正在为模型文本打字，使用打字机文本
-                if typing_active and typing_for_model:
-                    display_text = typing_text
-                else:
-                    display_text = current_model_text
-                display_time = model_text_display_time
-                display_duration = model_text_display_duration
-        # 如果没有模型回复或模型回复已过期，显示用户输入
-        elif current_user_text and time.time() - text_display_time < text_display_duration:
+                should_display_model = True
+        
+        # 检查是否显示用户输入
+        should_display_user = False
+        if current_user_text:
+            current_time = time.time()
+            # 用户输入文本在显示时间内
+            if current_time - text_display_time < text_display_duration:
+                should_display_user = True
+        
+        # 决定显示哪个文本
+        if should_display_model:
+            # 如果正在为模型文本打字，使用打字机文本
+            if typing_active and typing_for_model:
+                display_text = typing_text
+            else:
+                display_text = current_model_text
+            display_time = model_text_display_time
+            display_duration = model_text_display_duration
+        elif should_display_user:
+            # 显示用户输入文本
             display_text = current_user_text
             display_time = text_display_time
             display_duration = text_display_duration
