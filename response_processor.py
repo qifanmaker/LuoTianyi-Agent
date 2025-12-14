@@ -106,9 +106,24 @@ class ResponseProcessor:
             emotion = response.get('emotion', 'none')
             content = response.get('content', '')
             action = response.get('action', None)
+            
+            # 如果有action参数，先处理content的语音，再添加歌曲
             if action and isinstance(action, dict) and action.get('type') == 'play_song':
                 song_file = action.get('song')
                 if song_file:
+                    # 先处理content的语音（如果有内容）
+                    if content and content.strip():
+                        # 生成content的语音文件
+                        voice_url = tianyi_voice.GetVoice(content.strip())
+                        r = requests.get(f'http://localhost:9872/file={voice_url}')
+                        r.raise_for_status()
+                        filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
+                        with open(filename, "wb") as f:
+                            f.write(r.content)
+                        voice_data.append((filename, emotion))
+                        print(f"Saved content voice: {filename} with mood: {emotion}")
+                    
+                    # 然后添加歌曲文件
                     filename = os.path.join(self.song_save_dir, song_file.strip('()'))
                     voice_data.append((filename, emotion))
                     return voice_data
@@ -133,6 +148,19 @@ class ResponseProcessor:
                     if action and isinstance(action, dict) and action.get('type') == 'play_song':
                         song_file = action.get('song')
                         if song_file:
+                            # 先处理content的语音（如果有内容）
+                            if content and content.strip():
+                                # 生成content的语音文件
+                                voice_url = tianyi_voice.GetVoice(content.strip())
+                                r = requests.get(f'http://localhost:9872/file={voice_url}')
+                                r.raise_for_status()
+                                filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
+                                with open(filename, "wb") as f:
+                                    f.write(r.content)
+                                voice_data.append((filename, emotion))
+                                print(f"Saved content voice: {filename} with mood: {emotion}")
+                            
+                            # 然后添加歌曲文件
                             filename = os.path.join(self.song_save_dir, song_file.strip('()'))
                             voice_data.append((filename, emotion))
                             return voice_data

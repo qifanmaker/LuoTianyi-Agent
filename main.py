@@ -196,6 +196,7 @@ def main():
     is_speaking = False  # 是否正在播放语音
     last_idle_motion_time = 0  # 上次播放待机动作的时间
     idle_motion_interval = 5  # 待机动作间隔（秒）
+    current_song_playing = None  # 当前正在播放的歌曲
     
     # 文本显示相关变量
     current_user_text = ""  # 当前显示的用户输入文本
@@ -329,39 +330,54 @@ def main():
                 print(f"Failed to play emotion motion: {e}")
                 # 如果特定动作播放失败，播放随机动作
                 model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
+        elif emotion == "sad":
+            try:
+                model.StartMotion("FlickDown", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
+            except Exception as e:
+                print(f"Failed to play emotion motion: {e}")
+                # 如果特定动作播放失败，播放随机动作
+                model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
         else:
             # 其他情绪暂时使用随机动作
             model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
 
     def play_song(song_name):
-        """播放歌曲文件"""
-        nonlocal is_speaking
+        """播放歌曲文件（使用audio_player模块，支持口型同步）"""
+        nonlocal is_speaking, current_song_playing, current_wav_handler, current_lip_sync_n
         if song_name in songs_list:
             song_path = os.path.join("songs", song_name)
             if os.path.exists(song_path):
                 is_speaking = True
-                pygame.mixer.music.load(song_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():  # 等待歌曲播放完成
-                    pygame.time.wait(100)
-                is_speaking = False
+                current_song_playing = song_name
+                # 使用audio_player播放歌曲，支持口型同步
+                current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, song_path)
+                print(f"开始播放歌曲（带口型同步）: {song_name}")
     
     def play_next_voice():
-        """播放下一个语音文件"""
-        nonlocal current_wav_handler, current_lip_sync_n, is_speaking, last_idle_motion_time, all_voices_finished
-        if voice_queue and not is_speaking:
+        """播放下一个语音文件或歌曲"""
+        nonlocal current_wav_handler, current_lip_sync_n, is_speaking, last_idle_motion_time, all_voices_finished, current_song_playing
+        if voice_queue and not is_speaking and current_song_playing is None:
             is_speaking = True
             all_voices_finished = False  # 开始播放语音，标记为未完成
-            next_voice, emotion = voice_queue.pop(0)  # 现在voice_queue中存储(文件路径, 情绪)元组
-            print(f"Playing voice: {next_voice} with emotion: {emotion}")
+            next_item, emotion = voice_queue.pop(0)  # voice_queue中存储(文件路径, 情绪)元组
+            print(f"Playing: {next_item} with emotion: {emotion}")
             print(f"Voice queue length after pop: {len(voice_queue)}")
                 
             # 根据情绪播放对应动作
             play_emotion_motion(emotion)
             last_idle_motion_time = time.time()  # 更新最后动作时间
             
-            current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, next_voice)
-        elif not voice_queue and not is_speaking:
+            # 检查是否是歌曲文件（在songs目录中）
+            if os.path.exists(next_item) and "songs" in next_item:
+                # 这是歌曲文件，使用play_song播放
+                song_name = os.path.basename(next_item)
+                print(f"Detected song file: {song_name}")
+                # 播放歌曲（使用audio_player，支持口型同步）
+                play_song(song_name)
+            else:
+                # 这是语音文件，使用audio_player播放
+                current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, next_item)
+        elif not voice_queue and not is_speaking and current_song_playing is None:
             # 语音队列为空且没有正在播放的语音，标记为所有语音已完成
             all_voices_finished = True
 
