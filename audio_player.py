@@ -75,11 +75,19 @@ def update_lipsync(model, wav_handler, lip_sync_n: float = 3.0):
     Returns:
         bool: 如果音频还在播放返回True，否则返回False
     """
-    if wav_handler.Update():
+    result = wav_handler.Update()
+    if result:
         # 利用 wav 响度更新嘴部张合
         model.SetParameterValue(
             StandardParams.ParamMouthOpenY, 
             wav_handler.GetRms() * lip_sync_n
         )
         return True
-    return False
+    else:
+        # 调试：打印信息
+        import pygame
+        if pygame.mixer.music.get_busy():
+            # 音乐仍在播放，但 wav_handler 已结束？这可能发生在歌曲播放时
+            # 返回 True 以保持 is_speaking 为 True
+            return True
+        return False

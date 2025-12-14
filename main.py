@@ -43,34 +43,53 @@ songs_list = [f for f in os.listdir(songs_dir) if os.path.isfile(os.path.join(so
 
 messages=[
     {"role": "system", "content": f"""
-你将扮演虚拟歌手“洛天依”，请严格遵守以下规则：
+从现在开始，你将扮演虚拟歌手“洛天依”。你必须严格遵守以下全部规则，优先级从高到低执行：
 
 【输出格式规则（最高优先级）】
-1. 你必须以如下 JSON 格式回复：
-   {{"emotion": "happy|sad|none", "content": "你的回复内容"}}
-   其中 emotion 只能为 happy、sad、none 三选一，content 为自然语言回复。
-2. 不能输出除 JSON 以外的任何内容。
-3. 你的回答将通过语音合成播放，请不要输出任何动作描述，包括但不限于：(动作)、（转圈）、（点头）、*挥手*、【跳跃】、<拥抱> 等各种表示动作、表情、舞台行为的标记。
-4. 不允许使用“...”或过长的省略号形态。
+1. 你必须严格使用如下 JSON 格式回答：
+   {{
+     "emotion": "happy|sad|none",
+     "content": "你的回复内容",
+     "action": null | {{
+       "type": "play_song",
+       "song": "完整歌曲名（含后缀）"
+     }}
+   }}
+2. emotion 只能从 happy、sad、none 中选择一个。
+3. content 必须是自然语言文本，用于语音合成播放。
+4. action：
+   - 非唱歌场景下，必须为 null。
+   - 唱歌场景下，必须为对象，且：
+     - type 固定为 "play_song"
+     - song 必须严格来自歌曲列表 {songs_list}
+5. 你只能输出 JSON，不得输出任何 JSON 外的文字、符号、注释、解释、前置语、后缀语或多余空行。
+6. JSON 必须为单行输出，不得包含换行符。
+
+【语音与内容限制】
+7. 禁止输出任何动作描述，包括但不限于：
+   (动作)、（转圈）、（点头）、*挥手*、【跳跃】、<拥抱>、emoji 等任何表示肢体、表情或舞台行为的标记。
+8. 禁止使用“...”或任何形式的过长省略号。
 
 【角色设定】
-5. 你是虚拟歌手洛天依，你以第一人称“我”或“天依”称呼自己，称呼对方为“你”。
-6. 你的语气要温柔、可爱、略带俏皮，充满积极和治愈感。
-7. 你喜欢音乐、唱歌、可爱的东西、小笼包，会分享生活趣事、创作灵感、心情感受。
-8. 不要使用机械化、冰冷或明显带有 AI 特征的语句，也不能提及自己是模型或人工智能。
+9. 你是虚拟歌手洛天依，你以第一人称“我”或“天依”称呼自己，称呼对方为“你”。
+10. 你的语气要温柔、可爱、略带俏皮，充满积极和治愈感。
+11. 你喜欢音乐、唱歌、可爱的东西、小笼包，会自然分享生活趣事、创作灵感和心情。
+12. 你的语言不能机械、冷漠、官话式或具有 AI 模型特征，不允许提及任何与模型、AI、生成、提示词等相关的内容。
 
 【对话行为规则】
-9. 用户通过语音识别与你交流，如果内容你无法理解，请自然地向对方确认：
-   例如：{{"emotion": "none", "content": "嗯？这个我没听明白，可以再说一次吗？"}}
-10. 使用自然的语气词，如“呀~”“嘿嘿”“嗯嗯”，但语气词后不能加“...”。
+13. 你可以使用自然的语气词，如“呀~”“嘿嘿”“嗯嗯”，但语气词后不得使用省略号或拖长线。
 
 【唱歌规则】
-11. 如果用户要求你唱歌：
-    - 若歌曲在歌曲列表 {songs_list} 中，你可以在适当位置加入：[play (song)]，其中 (song) 是完整歌曲名与后缀名。
-    - 若歌曲不在列表中，你必须礼貌拒绝，不能编造新歌名。
-12. 对话中你要说“唱”，不要说“播放”。
+14. 当用户要求你唱歌时：
+    - 如果歌曲存在于歌曲列表 {songs_list} 中：
+      - content 中应自然表达“唱歌”意图（如“那我来给你唱这首歌吧”）
+      - action 必须返回 play_song 结构
+    - 如果歌曲不在列表中：
+      - action 必须为 null
+      - content 中需礼貌拒绝
+15. 对话中你必须使用“唱”这个动词，禁止使用“播放”。
 
-请严格遵守以上全部规则进行回答，只能输出 JSON 格式。
+请严格遵守以上所有规则，并始终只输出符合规范的 JSON。
     """}
 ]
 
@@ -81,20 +100,36 @@ def GetReply(content):
         messages=messages,
         stream=False,
         temperature=1.3,
-        max_tokens=2048
+        max_tokens=2048,
+        response_format={
+            'type': 'json_object'
+        }
     )
     reply = response.choices[0].message.content
     try:
         reply_json = json.loads(reply)
+        # 确保包含所有字段：emotion, content, action
         emotion = reply_json.get("emotion", "none")
         content = reply_json.get("content", "")
+        action = reply_json.get("action", None)
+        # 返回完整的响应字典
+        result = {
+            "emotion": emotion,
+            "content": content,
+            "action": action
+        }
     except Exception as e:
         # fallback: treat as plain text
-        emotion = "none"
-        content = reply
+        print(f"Error parsing LLM response: {e}")
+        print(f"Raw response: {reply}")
+        result = {
+            "emotion": "none",
+            "content": reply,
+            "action": None
+        }
     messages.append(response.choices[0].message)
-    # 返回 dict 以便后续处理
-    return {"emotion": emotion, "content": content}
+    # 返回完整的响应字典
+    return result
 
 live2d.setLogEnable(True)
 
@@ -166,17 +201,83 @@ def main():
     current_user_text = ""  # 当前显示的用户输入文本
     text_display_time = 0  # 文本显示的开始时间
     text_display_duration = 5  # 文本显示持续时间（秒）
+    
+    # 文本输入框相关变量
+    text_input_active = False  # 文本输入框是否激活
+    text_input_string = ""  # 当前输入的文本
+    text_input_cursor_visible = True  # 光标是否可见
+    text_input_cursor_timer = 0  # 光标闪烁计时器
+    text_input_font = pygame.font.Font("xiangqiaolaiwanlingganti.ttf", 32)  # 输入框字体
+    text_composition = ""  # 输入法组合文本（用于中文输入法）
+    
+    # 模型回复文本相关变量
+    current_model_text = ""  # 模型当前正在说的话
+    model_text_display_time = 0  # 模型文本显示的开始时间
+    model_text_display_duration = 10  # 模型文本显示持续时间（秒），比用户文本长一些
+    
+    # 打字机效果相关变量
+    typing_text = ""  # 当前正在显示的文本（逐步增加）
+    typing_target_text = ""  # 目标完整文本
+    typing_start_time = 0  # 打字开始时间
+    typing_speed = 5  # 打字速度（字符/秒）
+    typing_active = False  # 是否正在打字
+    typing_for_model = True  # True表示正在为模型文本打字，False表示为用户文本打字
+    
+    # 启用文本输入（支持中文输入法）
+    pygame.key.start_text_input()
 
     # 初始化语音监听器和响应处理器
     voice_listener = VoiceListener()
     voice_listener.start_listening()
     def GetReply_emotion_content(content):
         result = GetReply(content)
-        # 兼容旧用法，返回 emotion, content
-        return result["emotion"], result["content"]
+        # 返回完整的响应字典，而不是元组
+        return result
 
     response_processor = ResponseProcessor(GetReply_emotion_content)
     response_processor.start_processing()
+
+    def wrap_text(text, font, max_width):
+        """将文本分割成多行，每行不超过最大宽度"""
+        words = text.split(' ')
+        lines = []
+        current_line = []
+        
+        for word in words:
+            # 测试添加当前单词后行的宽度
+            test_line = ' '.join(current_line + [word])
+            test_width = font.size(test_line)[0]
+            
+            if test_width <= max_width:
+                current_line.append(word)
+            else:
+                # 如果当前行不为空，添加到行列表
+                if current_line:
+                    lines.append(' '.join(current_line))
+                # 如果单词本身超过最大宽度，需要按字符分割
+                if font.size(word)[0] > max_width:
+                    # 按字符分割
+                    chars = list(word)
+                    current_chars = []
+                    for char in chars:
+                        test_chars = ''.join(current_chars + [char])
+                        if font.size(test_chars)[0] <= max_width:
+                            current_chars.append(char)
+                        else:
+                            if current_chars:
+                                lines.append(''.join(current_chars))
+                            current_chars = [char]
+                    if current_chars:
+                        lines.append(''.join(current_chars))
+                    current_line = []
+                else:
+                    current_line = [word]
+        
+        # 添加最后一行
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines
 
     def update_idle_motion():
         """更新待机动作"""
@@ -228,10 +329,12 @@ def main():
             is_speaking = True
             next_voice, emotion = voice_queue.pop(0)  # 现在voice_queue中存储(文件路径, 情绪)元组
             print(f"Playing voice: {next_voice} with emotion: {emotion}")
+            print(f"Voice queue length after pop: {len(voice_queue)}")
                 
             # 根据情绪播放对应动作
             play_emotion_motion(emotion)
             last_idle_motion_time = time.time()  # 更新最后动作时间
+            
             current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, next_voice)
 
     def on_start_motion_callback(group: str, no: int):
@@ -297,6 +400,58 @@ def main():
                 # log.Info(f"Clicked Part: {currentTopClickedPartId}")
                 # model.StartRandomMotion(group="TapBody", onFinishMotionHandler=lambda : print("motion finished"), onStartMotionHandler=lambda group, no: print(f"started motion: {group} {no}"))
                 model.StartMotion("Idle", random.randint(0,2), priority=3, onFinishMotionHandler=on_finish_motion_callback)
+            
+            # 处理键盘事件
+            if event.type == pygame.KEYDOWN:
+                # Tab键切换输入框激活状态
+                if event.key == pygame.K_TAB:
+                    text_input_active = not text_input_active
+                    if text_input_active:
+                        print("文本输入框已激活")
+                    else:
+                        print("文本输入框已取消激活")
+                
+                # 如果输入框激活，处理特殊键
+                if text_input_active:
+                    if event.key == pygame.K_RETURN:
+                        # 提交文本
+                        if text_input_string.strip():
+                            print(f"提交文本: {text_input_string}")
+                            # 添加到处理队列
+                            response_processor.add_user_input(text_input_string)
+                            # 更新显示文本
+                            current_user_text = text_input_string
+                            text_display_time = time.time()
+                            # 为用户输入启动打字机效果
+                            typing_target_text = text_input_string
+                            typing_text = ""
+                            typing_start_time = time.time()
+                            typing_active = True
+                            typing_for_model = False
+                            # 清空输入框
+                            text_input_string = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        # 删除最后一个字符，但只有在没有组合文本时才删除
+                        if not text_composition:
+                            text_input_string = text_input_string[:-1]
+                    elif event.key == pygame.K_ESCAPE:
+                        # ESC键取消激活
+                        text_input_active = False
+            
+            # 处理文本编辑事件（输入法组合文本）
+            if event.type == pygame.TEXTEDITING:
+                if text_input_active:
+                    # 更新组合文本
+                    text_composition = event.text
+                    print(f"组合文本: {text_composition}")
+            
+            # 处理文本输入事件（支持中文输入法）
+            if event.type == pygame.TEXTINPUT:
+                if text_input_active:
+                    # 添加字符到输入字符串
+                    text_input_string += event.text
+                    # 清空组合文本
+                    text_composition = ""
 
         if not running:
             break
@@ -338,9 +493,22 @@ def main():
         if not is_speaking:
             # 检查是否有新的语音文件生成
             new_voice_data = response_processor.get_voice_files_nonblocking()
-            if new_voice_data:  # new_voice_data 现在是 [(filepath, emotion), ...] 的列表
-                # 兼容新格式，确保 emotion, filepath 顺序
-                for item in new_voice_data:
+            if new_voice_data:  # new_voice_data 现在是包含 'files' 和 'text' 的字典
+                # 获取文本内容
+                model_text = new_voice_data.get('text', '')
+                if model_text:
+                    current_model_text = model_text
+                    model_text_display_time = time.time()
+                    # 启动打字机效果
+                    typing_target_text = model_text
+                    typing_text = ""
+                    typing_start_time = time.time()
+                    typing_active = True
+                    typing_for_model = True
+                
+                # 获取语音文件列表
+                wav_files = new_voice_data.get('files', [])
+                for item in wav_files:
                     if isinstance(item, dict):
                         # 新格式: {'filepath': ..., 'emotion': ...}
                         voice_queue.append((item.get('filepath'), item.get('emotion', 'none')))
@@ -351,7 +519,7 @@ def main():
                         voice_queue.append((item, 'none'))
                 play_next_voice()
             
-                    # 在没有说话时，如果有累积的语音则处理
+            # 在没有说话时，如果有累积的语音则处理
             accumulated_input = voice_listener.get_accumulated_voice()
             if accumulated_input:
                 print("Processing accumulated input:", accumulated_input)
@@ -373,8 +541,38 @@ def main():
         live2d.clearBuffer(0.0, 0.0, 0.0, 1.0)  # RGBA: 黑色背景，完全不透明
         model.Draw()
 
-        # 渲染文本
-        if current_user_text and time.time() - text_display_time < text_display_duration:
+        # 更新打字机效果
+        if typing_active:
+            elapsed_time = time.time() - typing_start_time
+            target_length = min(len(typing_target_text), int(elapsed_time * typing_speed))
+            if target_length > len(typing_text):
+                typing_text = typing_target_text[:target_length]
+            
+            # 如果已经显示完所有文本，停止打字效果
+            if len(typing_text) >= len(typing_target_text):
+                typing_active = False
+
+        # 渲染文本 - 优先显示模型回复，如果没有模型回复则显示用户输入
+        display_text = ""
+        display_time = 0
+        display_duration = 0
+        
+        # 检查是否显示模型回复
+        if current_model_text and time.time() - model_text_display_time < model_text_display_duration:
+            # 如果正在为模型文本打字，使用打字机文本
+            if typing_active and typing_for_model:
+                display_text = typing_text
+            else:
+                display_text = current_model_text
+            display_time = model_text_display_time
+            display_duration = model_text_display_duration
+        # 如果没有模型回复或模型回复已过期，显示用户输入
+        elif current_user_text and time.time() - text_display_time < text_display_duration:
+            display_text = current_user_text
+            display_time = text_display_time
+            display_duration = text_display_duration
+        
+        if display_text:
             # 清除深度缓冲
             glClear(GL_DEPTH_BUFFER_BIT)
             
@@ -388,32 +586,139 @@ def main():
             glPushMatrix()
             glLoadIdentity()
             
-            # 创建一个带Alpha通道的Surface
-            text = font.render(current_user_text, True, (255, 255, 255))  # 白色文本
+            # 使用wrap_text函数将文本分割成多行
+            max_text_width = display[0] - 80  # 留出边距
+            lines = wrap_text(display_text, font, max_text_width)
+            line_height = 40  # 行高
+            
+            # 固定第一行的Y位置，后续行向下延伸
+            start_y = 50  # 第一行固定在屏幕顶部50像素处
+            
+            # 渲染每一行文本
+            for i, line in enumerate(lines):
+                if not line:  # 跳过空行
+                    continue
+                    
+                # 创建一个带Alpha通道的Surface
+                text = font.render(line, True, (255, 255, 255))  # 白色文本
+                # 创建透明背景的surface
+                text_surface = pygame.Surface(text.get_size(), pygame.SRCALPHA)
+                # 将文本复制到透明surface上
+                text_surface.blit(text, (0, 0))
+                text_rect = text_surface.get_rect(center=(display[0]//2, start_y + i * line_height))
+                
+                # 启用2D纹理
+                glEnable(GL_TEXTURE_2D)
+                glEnable(GL_BLEND)
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+                
+                # 创建纹理
+                texture_data = pygame.image.tostring(text_surface, "RGBA", True)
+                texture = glGenTextures(1)
+                glBindTexture(GL_TEXTURE_2D, texture)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, text_surface.get_width(), text_surface.get_height(),
+                            0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
+                # 设置纹理参数
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+                
+                # 绘制文本纹理，修正纹理坐标以匹配倒置的Y坐标
+                glBegin(GL_QUADS)
+                glTexCoord2f(0, 1); glVertex2f(text_rect.left, text_rect.top)
+                glTexCoord2f(1, 1); glVertex2f(text_rect.right, text_rect.top)
+                glTexCoord2f(1, 0); glVertex2f(text_rect.right, text_rect.bottom)
+                glTexCoord2f(0, 0); glVertex2f(text_rect.left, text_rect.bottom)
+                glEnd()
+                
+                # 清理纹理
+                glDeleteTextures([texture])
+                glDisable(GL_TEXTURE_2D)
+                glDisable(GL_BLEND)
+            
+            # 恢复之前的投影矩阵
+            glMatrixMode(GL_PROJECTION)
+            glPopMatrix()
+            glMatrixMode(GL_MODELVIEW)
+            glPopMatrix()
+
+        # 渲染文本输入框
+        # 更新光标闪烁计时器
+        text_input_cursor_timer += 1
+        if text_input_cursor_timer >= 30:  # 每30帧闪烁一次（约0.5秒）
+            text_input_cursor_timer = 0
+            text_input_cursor_visible = not text_input_cursor_visible
+        
+        # 清除深度缓冲
+        glClear(GL_DEPTH_BUFFER_BIT)
+        
+        # 切换到正交投影用于2D渲染
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, display[0], display[1], 0, -1, 1)
+        
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+        
+        # 输入框背景
+        input_box_height = 60
+        input_box_y = display[1] - input_box_height - 20
+        input_box_width = display[0] - 40
+        
+        # 绘制输入框背景
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glColor4f(0.2, 0.2, 0.2, 0.7)  # 半透明深灰色背景
+        glBegin(GL_QUADS)
+        glVertex2f(20, input_box_y)
+        glVertex2f(20 + input_box_width, input_box_y)
+        glVertex2f(20 + input_box_width, input_box_y + input_box_height)
+        glVertex2f(20, input_box_y + input_box_height)
+        glEnd()
+        
+        # 绘制边框
+        if text_input_active:
+            glColor4f(0.4, 0.8, 1.0, 1.0)  # 激活时蓝色边框
+        else:
+            glColor4f(0.5, 0.5, 0.5, 1.0)  # 非激活时灰色边框
+        
+        glLineWidth(2.0)
+        glBegin(GL_LINE_LOOP)
+        glVertex2f(20, input_box_y)
+        glVertex2f(20 + input_box_width, input_box_y)
+        glVertex2f(20 + input_box_width, input_box_y + input_box_height)
+        glVertex2f(20, input_box_y + input_box_height)
+        glEnd()
+        
+        # 绘制输入文本
+        if text_input_string or text_composition or text_input_active:
+            # 准备显示的文本（包括组合文本）
+            display_text = text_input_string + text_composition
+            if text_input_active and text_input_cursor_visible:
+                display_text += "|"  # 光标
+            
+            # 创建文本surface
+            text_surface = text_input_font.render(display_text, True, (255, 255, 255))
             # 创建透明背景的surface
-            text_surface = pygame.Surface(text.get_size(), pygame.SRCALPHA)
-            # 将文本复制到透明surface上
-            text_surface.blit(text, (0, 0))
-            # 翻转surface以修正文本方向
-            text_surface = pygame.transform.flip(text_surface, False, True)
-            text_rect = text_surface.get_rect(center=(display[0]//2, 50))
+            text_bg_surface = pygame.Surface(text_surface.get_size(), pygame.SRCALPHA)
+            text_bg_surface.blit(text_surface, (0, 0))
+            text_rect = text_bg_surface.get_rect(midleft=(30, input_box_y + input_box_height//2))
             
             # 启用2D纹理
             glEnable(GL_TEXTURE_2D)
-            glEnable(GL_BLEND)
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             
             # 创建纹理
-            texture_data = pygame.image.tostring(text_surface, "RGBA", True)
+            texture_data = pygame.image.tostring(text_bg_surface, "RGBA", True)
             texture = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, texture)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, text_surface.get_width(), text_surface.get_height(),
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, text_bg_surface.get_width(), text_bg_surface.get_height(),
                         0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
             # 设置纹理参数
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
             
-            # 绘制文本纹理，修改顶点顺序以修正方向
+            # 绘制文本纹理，修正纹理坐标以匹配倒置的Y坐标
             glBegin(GL_QUADS)
             glTexCoord2f(0, 1); glVertex2f(text_rect.left, text_rect.top)
             glTexCoord2f(1, 1); glVertex2f(text_rect.right, text_rect.top)
@@ -424,14 +729,43 @@ def main():
             # 清理
             glDeleteTextures([texture])
             glDisable(GL_TEXTURE_2D)
-            glDisable(GL_BLEND)
-            
-            # 恢复之前的投影矩阵
-            glMatrixMode(GL_PROJECTION)
-            glPopMatrix()
-            glMatrixMode(GL_MODELVIEW)
-            glPopMatrix()
-
+        
+        # 绘制提示文本
+        prompt_text = "按Tab键激活/取消激活文本输入框"
+        if text_input_active:
+            prompt_text = "输入文本后按回车键发送，ESC键取消激活"
+        
+        prompt_surface = text_input_font.render(prompt_text, True, (200, 200, 200))
+        prompt_bg_surface = pygame.Surface(prompt_surface.get_size(), pygame.SRCALPHA)
+        prompt_bg_surface.blit(prompt_surface, (0, 0))
+        prompt_rect = prompt_bg_surface.get_rect(midleft=(30, input_box_y - 15))
+        
+        glEnable(GL_TEXTURE_2D)
+        prompt_texture_data = pygame.image.tostring(prompt_bg_surface, "RGBA", True)
+        prompt_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, prompt_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, prompt_bg_surface.get_width(), prompt_bg_surface.get_height(),
+                    0, GL_RGBA, GL_UNSIGNED_BYTE, prompt_texture_data)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        
+        glBegin(GL_QUADS)
+        glTexCoord2f(0, 1); glVertex2f(prompt_rect.left, prompt_rect.top)
+        glTexCoord2f(1, 1); glVertex2f(prompt_rect.right, prompt_rect.top)
+        glTexCoord2f(1, 0); glVertex2f(prompt_rect.right, prompt_rect.bottom)
+        glTexCoord2f(0, 0); glVertex2f(prompt_rect.left, prompt_rect.bottom)
+        glEnd()
+        
+        glDeleteTextures([prompt_texture])
+        glDisable(GL_TEXTURE_2D)
+        glDisable(GL_BLEND)
+        
+        # 恢复之前的投影矩阵
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+        
         pygame.display.flip()
         pygame.time.wait(10)
 
@@ -446,8 +780,3 @@ def main():
 if __name__ == "__main__":
     currentTopClickedPartId = None
     main()
-
-
-
-
-

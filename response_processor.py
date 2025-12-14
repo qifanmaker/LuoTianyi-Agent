@@ -34,8 +34,8 @@ class ResponseProcessor:
         """添加用户输入到处理队列"""
         self.processing_queue.put(user_input)
 
-    def get_voice_files_nonblocking(self) -> Optional[List[str]]:
-        """非阻塞地获取处理完成的语音文件列表"""
+    def get_voice_files_nonblocking(self) -> Optional[dict]:
+        """非阻塞地获取处理完成的语音文件列表和文本内容"""
         try:
             return self.voice_result_queue.get_nowait()
         except queue.Empty:
@@ -58,8 +58,30 @@ class ResponseProcessor:
                     print("Getting voices...")
                     wav_files = self._generate_voice_files(response)
                     
-                    # 将结果放入输出队列
-                    self.voice_result_queue.put(wav_files)
+                    # 提取文本内容
+                    text_content = ""
+                    if isinstance(response, dict):
+                        text_content = response.get('content', '')
+                    elif isinstance(response, (tuple, list)) and len(response) == 2:
+                        # 兼容 (emotion, content) 格式
+                        if not (response[0] and isinstance(response[0], str) and response[0].endswith(('.wav', '.mp3'))):
+                            text_content = response[1] if len(response) > 1 else ''
+                    else:
+                        # 尝试解析字符串
+                        import json
+                        try:
+                            resp_obj = json.loads(response)
+                            if isinstance(resp_obj, dict):
+                                text_content = resp_obj.get('content', '')
+                        except:
+                            text_content = str(response)
+                    
+                    # 将结果放入输出队列，现在包含文本内容
+                    result = {
+                        'files': wav_files,
+                        'text': text_content
+                    }
+                    self.voice_result_queue.put(result)
 
                 except Exception as e:
                     print(f"Error processing response: {e}")
@@ -80,18 +102,40 @@ class ResponseProcessor:
 
         # 1. 新格式：dict、tuple 或 json字符串
         if isinstance(response, dict):
+            # 新增：支持新版 action 字段
             emotion = response.get('emotion', 'none')
             content = response.get('content', '')
+            action = response.get('action', None)
+            if action and isinstance(action, dict) and action.get('type') == 'play_song':
+                song_file = action.get('song')
+                if song_file:
+                    filename = os.path.join(self.song_save_dir, song_file.strip('()'))
+                    voice_data.append((filename, emotion))
+                    return voice_data
         elif isinstance(response, (tuple, list)) and len(response) == 2:
             # 兼容 (emotion, content)
-            emotion, content = response
+            # 也兼容 (play_song, emotion)
+            if response[0] and isinstance(response[0], str) and response[0].endswith(('.wav', '.mp3')):
+                # 认为是 (play_song, emotion)
+                filename = os.path.join(self.song_save_dir, response[0].strip('()'))
+                voice_data.append((filename, response[1] if len(response) > 1 else 'none'))
+                return voice_data
+            else:
+                emotion, content = response
         else:
             # 兼容字符串格式，尝试解析json
             try:
                 resp_obj = json.loads(response)
-                if isinstance(resp_obj, dict) and 'content' in resp_obj:
+                if isinstance(resp_obj, dict):
                     emotion = resp_obj.get('emotion', 'none')
                     content = resp_obj.get('content', '')
+                    action = resp_obj.get('action', None)
+                    if action and isinstance(action, dict) and action.get('type') == 'play_song':
+                        song_file = action.get('song')
+                        if song_file:
+                            filename = os.path.join(self.song_save_dir, song_file.strip('()'))
+                            voice_data.append((filename, emotion))
+                            return voice_data
                 else:
                     emotion = 'none'
                     content = response
