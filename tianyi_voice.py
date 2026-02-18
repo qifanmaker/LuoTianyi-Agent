@@ -1,8 +1,11 @@
 from gradio_client import Client, handle_file
-import os
+import os, json
 local = os.path.dirname(os.path.abspath(__file__)) + "/"
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+GSV_API = config.get("GSV_API")
 def GetVoice(content):
-    client = Client("http://localhost:9872/")
+    client = Client(GSV_API)
     result = client.predict(
         ref_wav_path=handle_file(local+'sample_voice_fixed.wav'),
         prompt_text="是不是让大家忍不住跟着节奏摇摆起来啦？",

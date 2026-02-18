@@ -6,3 +6,5 @@ config.json
 /test
 **/.DS_Store
 /songs
+/vosk-model-small-cn-0.22
+/images

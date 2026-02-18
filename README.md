@@ -60,7 +60,7 @@ python main.py
 | `audio_player.py` | 音频播放模块，负责播放合成的洛天依语音。 |
 | `tianyi_voice.py` | 洛天依声线相关的语音合成逻辑封装。 |
 | `response_processor.py` | 响应处理模块，可能负责将 LLM 文本转化为 Live2D 动作和语音指令。 |
-| `Resources/hiyori_pro_zh` | Live2D 模型资源存放目录。 |
+| `Resources/luotianyi` | Live2D 模型资源存放目录。 |
 | `songs` | 可能用于存放歌唱或背景音乐资源。 |
 | `voice.wav`, `sample_voice.pkf` | 语音样本和配置，用于 GPT-SoVITS 模型。 |
 

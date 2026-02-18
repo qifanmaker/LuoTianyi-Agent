@@ -1,0 +1,82 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "luotianyi.moc3",
+		"Textures": [
+			"luotianyi.2048/texture_00.png",
+			"luotianyi.2048/texture_01.png"
+		],
+		"Physics": "luotianyi.physics3.json",
+		"Pose": "luotianyi.pose3.json",
+		"DisplayInfo": "luotianyi.cdi3.json",
+		"Motions": {
+			"Idle": [
+                {
+                    "File": "motion/luotianyi_m01.motion3.json"
+                },
+                {
+                    "File": "motion/luotianyi_m02.motion3.json"
+                },
+                {
+                    "File": "motion/luotianyi_m05.motion3.json"
+                }
+            ],
+            "Flick": [
+                {
+                    "File": "motion/luotianyi_m03.motion3.json"
+                }
+            ],
+            "FlickDown": [
+                {
+                    "File": "motion/luotianyi_m04.motion3.json"
+                }
+            ],
+            "FlickUp": [
+                {
+                    "File": "motion/luotianyi_m06.motion3.json"
+                }
+            ],
+            "Tap": [
+                {
+                    "File": "motion/luotianyi_m07.motion3.json"
+                },
+                {
+                    "File": "motion/luotianyi_m08.motion3.json"
+                }
+            ],
+            "Tap@Body": [
+                {
+                    "File": "motion/luotianyi_m09.motion3.json"
+                }
+            ],
+            "Flick@Body": [
+                {
+                    "File": "motion/luotianyi_m10.motion3.json"
+                }
+            ]
+		}
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthOpenY"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		}
+	],
+	"HitAreas": [
+		{
+			"Id": "HitArea",
+			"Name": "Body"
+		}
+	]
+}

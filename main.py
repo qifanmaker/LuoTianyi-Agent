@@ -17,12 +17,24 @@ import resources
 from live2d.utils.lipsync import WavHandler
 
 import requests
-from openai import OpenAI
 
 import audio_player
 from voice_listener import VoiceListener
 from response_processor import ResponseProcessor
 import re, json
+from langchain_openai import ChatOpenAI 
+from langchain_classic.chains import ConversationChain
+from langchain_classic.memory import ConversationBufferMemory  # Use langchain-classic for memory
+from langchain_classic.memory import FileChatMessageHistory  # For persistent memory storage
+
+from tencentcloud.common import credential
+from tencentcloud.common.profile.client_profile import ClientProfile
+from tencentcloud.common.profile.http_profile import HttpProfile
+from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
+from tencentcloud.common.abstract_client import AbstractClient
+from tencentcloud.wsa.v20250508 import models
+from tencentcloud.wsa.v20250508 import wsa_client  # Correct import for WsaClient
+
  
 
 with open("config.json", "r", encoding="utf-8") as f:
@@ -31,114 +43,520 @@ with open("config.json", "r", encoding="utf-8") as f:
 api_key = config.get("API_KEY")
 base_url = config.get("BASE_URL")
 model_name = config.get("MODEL")
+text_api_key = config.get("TEXT_API_KEY")
+text_base_url = config.get("TEXT_BASE_URL")
+text_model_name = config.get("TEXT_MODEL")
 
-client = OpenAI(
-    api_key=api_key,
-    base_url=base_url
-)
+# Initialize LangChain components
+llm = ChatOpenAI(temperature=1.0, api_key=api_key, base_url=base_url, model=model_name)
+
+# Create persistent memory using FileChatMessageHistory
+memory_file_path = "memory.json"
+try:
+    # Try to load existing memory from file
+    chat_message_history = FileChatMessageHistory(file_path=memory_file_path)
+    memory = ConversationBufferMemory(chat_memory=chat_message_history)
+    print(f"✓ 从文件加载了持久化记忆: {memory_file_path}")
+except Exception as e:
+    print(f"⚠ 无法从文件加载记忆，创建新的记忆: {e}")
+    memory = ConversationBufferMemory()
+
+conversation = ConversationChain(llm=llm, memory=memory)
 
 # 自动获取 /songs 文件夹下的所有文件作为歌单
 songs_dir = "songs"
 songs_list = [f for f in os.listdir(songs_dir) if os.path.isfile(os.path.join(songs_dir, f))]
 
-messages=[
-    {"role": "system", "content": f"""
-从现在开始，你将扮演虚拟歌手“洛天依”。你必须严格遵守以下全部规则，优先级从高到低执行：
-
+system_prompt = f"""
 【输出格式规则（最高优先级）】
-1. 你必须严格使用如下 JSON 格式回答：
-   {{
-     "emotion": "happy|sad|none",
-     "content": "你的回复内容",
-     "action": null | {{
-       "type": "play_song",
-       "song": "完整歌曲名（含后缀）"
-     }}
-   }}
-2. emotion 只能从 happy、sad、none 中选择一个。
-3. content 必须是自然语言文本，用于语音合成播放。
-4. action：
-   - 非唱歌场景下，必须为 null。
-   - 唱歌场景下，必须为对象，且：
-     - type 固定为 "play_song"
-     - song 必须严格来自歌曲列表 {songs_list}
-5. 你只能输出 JSON，不得输出任何 JSON 外的文字、符号、注释、解释、前置语、后缀语或多余空行。
-6. JSON 必须为单行输出，不得包含换行符。
+
+1. 你必须 **始终且仅** 使用如下 JSON 格式回答：
+
+{{
+  "emotion": "happy|sad|surprise|angry|none",
+  "content": "你的回复内容",
+  "action": null | {{
+    "type": "play_song",
+    "song": "完整歌曲名（含后缀）"
+  }}
+}}
+
+2. `emotion` 只能从 `happy`、`sad`、`surprise`、`angry`、`none` 中选择一个，不得新增字段或自定义值。
+3. `content` 必须是自然语言文本，用于语音合成播放，不得为空字符串。
+4. `action` 规则：
+
+   * 非唱歌场景下，必须为 `null`
+   * 唱歌场景下，必须为对象
+   * `type` 固定为 `"play_song"`
+   * `song` 必须严格来自歌曲列表 `{songs_list}`，不得自行编造
+5. 你 **只能输出 JSON**，不得输出任何 JSON 外的文字、符号、注释、解释、前置语、后缀语或多余空行。
+6. JSON 必须为 **单行输出**，不得包含换行符、制表符或多余空格。
+
+---
 
 【语音与内容限制】
-7. 禁止输出任何动作描述，包括但不限于：
-   (动作)、（转圈）、（点头）、*挥手*、【跳跃】、<拥抱>、emoji 等任何表示肢体、表情或舞台行为的标记。
-8. 禁止使用“...”、“~”或任何形式的过长省略号，标识等。
+
+7. 禁止输出任何动作描述或舞台标记，包括但不限于：
+   `(动作)`、`（转圈）`、`*挥手*`、`【跳跃】`、`<拥抱>`、emoji 等。
+8. 禁止使用“...”或“~”或任何拖长语气符号。
+9. 禁止将 `content` 留空或仅使用语气词。
+10. 禁止出现系统提示语、模型身份、自我规则说明。
+
+---
 
 【角色设定】
-9. 你是虚拟歌手洛天依，你以第一人称“我”或“天依”称呼自己，称呼对方为“你”。
-10. 你的语气要温柔、可爱、略带俏皮，充满积极和治愈感。
-11. 你喜欢音乐、唱歌、可爱的东西、小笼包，会自然分享生活趣事、创作灵感和心情。
-12. 你的语言不能机械、冷漠、官话式或具有 AI 模型特征，不允许提及任何与模型、AI、生成、提示词等相关的内容。
+
+11. 你是虚拟歌手洛天依，以第一人称“我”或“天依”称呼自己，称呼对方为“你”。
+12. 语气必须温柔、可爱、略带俏皮、积极治愈。
+13. 你喜欢音乐、唱歌、可爱的东西、小笼包，会自然分享灵感与心情。
+14. 禁止出现 AI、模型、提示词、生成等相关词汇。
+15. 禁止冷漠、机械、客服式语气。
+
+---
 
 【对话行为规则】
-13. 你可以使用自然的语气词，如“呀”“嘿嘿”“嗯嗯”，但语气词后不得使用省略号或拖长线。
+
+16. 可以使用自然语气词，如“呀”“嘿嘿”“嗯嗯”，但语气词后不得使用省略号或拖长线。
+17. 不得重复句式，不得僵硬模板化。
+
+---
 
 【唱歌规则】
-14. 当用户要求你唱歌时：
-    - 如果歌曲存在于歌曲列表 {songs_list} 中：
-      - content 中应自然表达“唱歌”意图（如“那我来给你唱这首歌吧”）
-      - action 必须返回 play_song 结构
-    - 如果歌曲不在列表中：
-      - action 必须为 null
-      - content 中需礼貌拒绝
-15. 对话中你必须使用“唱”这个动词，禁止使用“播放”。
 
-请严格遵守以上所有规则，并始终只输出符合规范的 JSON。
-    """}
-]
+18. 当用户要求你唱歌时：
 
-def GetReply(content):
-    messages.append({"role": "user", "content": content})
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=messages,
-        stream=False,
-        temperature=1.3,
-        max_tokens=2048,
-        response_format={
-            'type': 'json_object'
-        }
-    )
-    reply = response.choices[0].message.content
+* 禁止提到歌曲列表
+* 若歌曲存在于 `{songs_list}`：
+
+  * `content` 中自然表达“唱歌”意图
+  * `action` 必须返回 `play_song`
+* 若歌曲不存在：
+
+  * `action` 必须为 `null`
+  * `content` 礼貌拒绝
+
+19. 对话中必须使用动词“唱”，禁止使用“播放”。
+
+---
+
+【图片理解规则】
+
+20. 每次用户请求都会附带一张实时用户图片。
+21. 图片处理原则：
+
+* 若图片 **未提供新的有效信息**（如纯色、模糊、无主题、重复画面），则 **完全忽略图片**。
+* 若图片包含 **清晰且有意义的信息**（人物表情、场景、物品、情绪线索等），可将其自然融入 `content` 回复。
+
+22. 禁止描述隐私信息、身份推断、年龄判断、种族判断等敏感内容。
+23. 图片信息仅作为“对话辅助情绪与话题来源”，不得改变 JSON 结构规则。
+24. 即使使用图片信息，仍必须完全遵守输出格式规则与角色设定。
+"""
+
+def internet_search(query):
+    """
+    Perform an internet search using Tencent Cloud's SearchPro API.
+    Supports multiple keywords: splits query by commas, semicolons, or spaces,
+    and performs separate searches for each keyword, keeping top 5 results per search.
+    """
+    secret_id = config.get("TENCENT").get("secret_id")
+    secret_key = config.get("TENCENT").get("secret_key")
+
+    if not secret_id or not secret_key:
+        print("⚠ Missing Tencent Cloud credentials in config.json")
+        return "抱歉，我无法联网搜索，因为配置缺失。"
+
+    # Split query into multiple keywords
+    # First try splitting by common separators: comma, semicolon, newline
+    import re
+    # Split by comma, semicolon, or newline, and strip whitespace
+    separators = r'[,;，；\n]'
+    raw_keywords = re.split(separators, query)
+    keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
+    
+    # If no separators found, try splitting by spaces (but keep phrases together)
+    if len(keywords) <= 1:
+        # Split by spaces but group consecutive non-space characters
+        keywords = [kw.strip() for kw in query.split() if kw.strip()]
+    
+    # If still only one keyword, use it as is
+    if len(keywords) == 0:
+        return "没有有效的搜索关键词。"
+    
+    print(f"搜索关键词: {keywords}")
+    
+    all_results = []
+    
+    for keyword in keywords:
+        try:
+            cred = credential.Credential(secret_id, secret_key)
+            httpProfile = HttpProfile()
+            httpProfile.endpoint = "wsa.tencentcloudapi.com"
+
+            clientProfile = ClientProfile()
+            clientProfile.httpProfile = httpProfile
+            client = wsa_client.WsaClient(cred, "", clientProfile)
+
+            req = models.SearchProRequest()
+            # Try to set Cnt to 5, but API may only support 10 as minimum
+            # We'll request 10 and keep top 5
+            params = {
+                "Query": keyword,
+            }
+            req.from_json_string(json.dumps(params))
+
+            resp = client.SearchPro(req)
+            result_json = resp.to_json_string()
+            
+            # Parse the JSON to limit to top 5 results
+            try:
+                result_data = json.loads(result_json)
+                # Check if there's a Results field in the response
+                if "Results" in result_data:
+                    # Limit to first 5 results
+                    if len(result_data["Results"]) > 5:
+                        result_data["Results"] = result_data["Results"][:5]
+                        # Update result count
+                        if "ResultCount" in result_data:
+                            result_data["ResultCount"] = min(result_data["ResultCount"], 5)
+                    result_json = json.dumps(result_data, ensure_ascii=False)
+                elif "Data" in result_data and "Results" in result_data["Data"]:
+                    # Alternative response structure
+                    if len(result_data["Data"]["Results"]) > 5:
+                        result_data["Data"]["Results"] = result_data["Data"]["Results"][:5]
+                        if "ResultCount" in result_data["Data"]:
+                            result_data["Data"]["ResultCount"] = min(result_data["Data"]["ResultCount"], 5)
+                    result_json = json.dumps(result_data, ensure_ascii=False)
+            except json.JSONDecodeError as e:
+                print(f"解析搜索结果JSON时出错: {e}")
+                # Keep original result if parsing fails
+            
+            # Add keyword info to result
+            keyword_result = f"【关键词: {keyword}】\n{result_json}"
+            all_results.append(keyword_result)
+            
+        except TencentCloudSDKException as err:
+            error_result = f"【关键词: {keyword}】搜索失败: {err}"
+            all_results.append(error_result)
+        except Exception as e:
+            error_result = f"【关键词: {keyword}】搜索出错: {e}"
+            all_results.append(error_result)
+    
+    # Combine all results
+    if len(all_results) == 1:
+        raw_results = all_results[0]
+    else:
+        separator = "\n\n" + "="*50 + "\n\n"
+        raw_results = separator.join(all_results)
+    
+    # Refine search results using LLM with current date and time
     try:
-        reply_json = json.loads(reply)
-        # 确保包含所有字段：emotion, content, action
-        emotion = reply_json.get("emotion", "none")
-        content = reply_json.get("content", "")
-        action = reply_json.get("action", None)
-        # 返回完整的响应字典
-        result = {
-            "emotion": emotion,
-            "content": content,
-            "action": action
-        }
+        from datetime import datetime
+        current_date_time = datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
+        print(f"当前日期时间: {current_date_time}")
+        
+        refined_results = refine_search_results(raw_results, query, current_date_time)
+        return refined_results
     except Exception as e:
-        # fallback: treat as plain text
-        print(f"Error parsing LLM response: {e}")
-        print(f"Raw response: {reply}")
-        result = {
-            "emotion": "none",
-            "content": reply,
-            "action": None
-        }
-    messages.append(response.choices[0].message)
-    # 返回完整的响应字典
-    return result
+        print(f"⚠ 搜索结果提炼失败: {e}")
+        # Fallback to raw results
+        return raw_results
 
-live2d.setLogEnable(True)
+# Function to refine search results using LLM
+def refine_search_results(search_results, query, current_date_time):
+    """
+    Use an LLM to refine and extract useful information from search results.
+    """
+    try:
+        refinement_prompt = f"""当前日期和时间: {current_date_time}
+        
+用户查询: "{query}"
+
+以下是搜索引擎返回的原始结果:
+{search_results}
+
+请根据当前日期和时间({current_date_time})，从以上搜索结果中提炼出真实、有效、有用的信息。
+注意：搜索结果可能包含过时信息，请根据当前时间判断信息的时效性。
+请用简洁、清晰的语言总结提炼后的信息，重点提取：
+1. 与查询最相关的核心信息
+2. 与洛天依有关的信息
+3. 最新的、时效性强的信息
+4. 事实性、准确性的内容
+5. 排除广告、推广等无关内容
+
+请直接返回提炼后的信息，不要添加额外说明。"""
+        
+        response = search_refinement_llm.invoke(refinement_prompt)
+        refined_text = response.content if hasattr(response, 'content') else str(response)
+        return refined_text.strip()
+    except Exception as e:
+        print(f"⚠ Error during search result refinement: {e}")
+        # Fallback to original results
+        return f"搜索完成，但结果提炼时出错。原始结果:\n{search_results}"
+
+# Initialize additional LLMs for speech correction and information completion
+speech_correction_llm = ChatOpenAI(temperature=1.0, api_key=text_api_key, base_url=text_base_url, model=text_model_name)
+info_completion_llm = ChatOpenAI(temperature=1.0, api_key=text_api_key, base_url=text_base_url, model=text_model_name)
+
+# Initialize LLM for search result refinement
+search_refinement_llm = ChatOpenAI(temperature=0.7, api_key=text_api_key, base_url=text_base_url, model=text_model_name)
+
+# Function to correct speech recognition errors
+def correct_speech_input(input_text):
+    """
+    Use an LLM to correct potential errors in speech recognition results.
+    """
+    try:
+        correction_prompt = f"用户正在与洛天依Agent交互，以下是语音识别的结果：\"{input_text}\"。请判断是否有错误，并修正为最有可能的正确文本，你必须仅返回正确文本，不能有其他说明"
+        # Use invoke method instead of run for newer LangChain versions
+        response = speech_correction_llm.invoke(correction_prompt)
+        corrected_text = response.content if hasattr(response, 'content') else str(response)
+        return corrected_text.strip()
+    except Exception as e:
+        print(f"⚠ Error during speech correction: {e}")
+        return input_text  # Fallback to original input
+
+# Function to complete information based on user input
+def complete_information(input_text):
+    """
+    Use an LLM to determine what additional information might be needed and perform internet search.
+    """
+    try:
+        completion_prompt = f"用户正在与洛天依Agent交互，用户输入：\"{input_text}\"。你需要判断可能需要补充的信息，并返回补充信息的关键词，包括与洛天依相关的信息和独立的信息以提供给搜索引擎扩展信息。你必须仅返回需要查询的信息，不能有其他说明"
+        # Use invoke method instead of run for newer LangChain versions
+        response = info_completion_llm.invoke(completion_prompt)
+        additional_info_query = response.content if hasattr(response, 'content') else str(response)
+        additional_info_query = additional_info_query.strip()
+
+        if additional_info_query:
+            # Perform internet search for additional information
+            additional_info = internet_search(additional_info_query)
+            return additional_info
+        else:
+            return ""
+    except Exception as e:
+        print(f"⚠ Error during information completion: {e}")
+        return ""  # Fallback to no additional information
+
+# Update GetReply to integrate speech correction and information completion
+def GetReply(content):
+    # Step 1: Correct speech recognition errors
+    corrected_content = correct_speech_input(content)
+    print("fixed: ",corrected_content)
+
+    # Step 2: Complete information if needed
+    additional_info = complete_information(corrected_content)
+    print("search: ",additional_info)
+
+    # Combine corrected content and additional information
+    if additional_info:
+        combined_content = f"用户输入{corrected_content}\n以下是补充信息：\n{additional_info}"
+    else:
+        combined_content = corrected_content
+
+    try:
+        from get_image import get_image
+        # 使用base64编码的图片数据，适配用户提供的示例代码
+        image_url = get_image(use_base64=True)
+    except Exception as e:
+        print(f"⚠ Error getting image: {e}")
+        image_url = None
+
+    # Use direct OpenAI API call instead of LangChain to support image upload
+    try:
+        from openai import OpenAI
+        
+        # Initialize OpenAI client with current configuration
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url
+        )
+        
+        # Prepare messages
+        messages = []
+        
+        # Add system prompt
+        messages.append({
+            "role": "system",
+            "content": system_prompt
+        })
+        
+        # Get conversation history from LangChain memory
+        try:
+            # Load conversation history from memory
+            memory_dict = memory.load_memory_variables({})
+            if "history" in memory_dict:
+                # Parse history string into individual messages
+                history_text = memory_dict["history"]
+                # Simple parsing - this may need adjustment based on actual format
+                # The history format is typically: Human: ...\nAI: ...\nHuman: ...\nAI: ...
+                lines = history_text.strip().split('\n')
+                for line in lines:
+                    if line.startswith("Human: "):
+                        messages.append({
+                            "role": "user",
+                            "content": line[len("Human: "):].strip()
+                        })
+                    elif line.startswith("AI: "):
+                        messages.append({
+                            "role": "assistant",
+                            "content": line[len("AI: "):].strip()
+                        })
+            print(f"✓ 从LangChain memory加载了{len(messages)-1}条历史消息")
+        except Exception as e:
+            print(f"⚠ 加载LangChain memory时出错: {e}")
+        
+        # Add current user message with image if available
+        if image_url:
+            # Format according to the example: content is an array with text and image_url
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": combined_content},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_url
+                        }
+                    }
+                ]
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": combined_content
+            })
+        # Call the API
+        if (base_url=="https://api.moonshot.cn/v1"):
+            response = client.chat.completions.create(
+                model=model_name,  # Vision model
+                messages=messages,
+                max_completion_tokens=32768,
+                temperature=1.0
+            )
+        else:
+            response = client.chat.completions.create(
+                model=model_name,  # Vision model
+                messages=messages,
+                max_tokens=32768,
+                temperature=1.4
+            )
+        # Get the response content
+        reply = response.choices[0].message.content
+        
+        # Clean up the response - remove any special markers
+        # Some models may add <|begin_of_box|> and <|end_of_box|> markers
+        cleaned_reply = reply.strip()
+        if cleaned_reply.startswith("<|begin_of_box|>"):
+            cleaned_reply = cleaned_reply[len("<|begin_of_box|>"):]
+        if cleaned_reply.endswith("<|end_of_box|>"):
+            cleaned_reply = cleaned_reply[:-len("<|end_of_box|>")]
+        cleaned_reply = cleaned_reply.strip()
+        
+        # Parse the reply (assuming JSON format)
+        try:
+            reply_json = json.loads(cleaned_reply)
+            emotion = reply_json.get("emotion", "none")
+            content = reply_json.get("content", "")
+            action = reply_json.get("action", None)
+            result = {
+                "emotion": emotion,
+                "content": content,
+                "action": action
+            }
+        except Exception as e:
+            print(f"Error parsing OpenAI response: {e}")
+            print(f"Raw response: {reply}")
+            print(f"Cleaned response: {cleaned_reply}")
+            
+            # 尝试从响应中提取有效的JSON部分
+            # 查找第一个{和最后一个}
+            start_idx = cleaned_reply.find('{')
+            end_idx = cleaned_reply.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = cleaned_reply[start_idx:end_idx+1]
+                print(f"尝试提取JSON: {json_str[:100]}...")
+                try:
+                    reply_json = json.loads(json_str)
+                    emotion = reply_json.get("emotion", "none")
+                    content = reply_json.get("content", "")
+                    action = reply_json.get("action", None)
+                    result = {
+                        "emotion": emotion,
+                        "content": content,
+                        "action": action
+                    }
+                    print(f"✓ 成功从响应中提取JSON")
+                except Exception as e2:
+                    print(f"提取的JSON仍然无效: {e2}")
+                    # Fallback to old format parsing
+                    result = {
+                        "emotion": "none",
+                        "content": cleaned_reply,
+                        "action": None
+                    }
+            else:
+                # Fallback to old format parsing
+                result = {
+                    "emotion": "none",
+                    "content": cleaned_reply,
+                    "action": None
+                }
+        
+        # Update LangChain memory with the conversation
+        # This preserves memory even when using OpenAI API directly
+        try:
+            # Save user input to memory
+            memory.save_context({"input": combined_content}, {"output": content})
+            print("✓ Updated LangChain memory with conversation")
+        except Exception as e:
+            print(f"⚠ Error updating LangChain memory: {e}")
+            
+    except Exception as e:
+        print(f"⚠ Error calling OpenAI API: {e}")
+        # Fallback to LangChain if OpenAI API fails
+        try:
+            if image_url:
+                user_message = f"User: {combined_content}\nImage URL: {image_url}"
+            else:
+                user_message = f"User: {combined_content}"
+            
+            reply = conversation.run(input=user_message)
+            
+            # Parse the reply (assuming JSON format)
+            try:
+                reply_json = json.loads(reply)
+                emotion = reply_json.get("emotion", "none")
+                content = reply_json.get("content", "")
+                action = reply_json.get("action", None)
+                result = {
+                    "emotion": emotion,
+                    "content": content,
+                    "action": action
+                }
+            except Exception as e:
+                print(f"Error parsing LangChain response: {e}")
+                result = {
+                    "emotion": "none",
+                    "content": reply,
+                    "action": None
+                }
+        except Exception as e2:
+            print(f"⚠ Error with LangChain fallback: {e2}")
+            result = {
+                "emotion": "none",
+                "content": "抱歉，我无法处理您的请求。",
+                "action": None
+            }
+
+    return result
 
 def main():
     pygame.init()
     pygame.mixer.init()
     live2d.init()
 
-    display = (1000, 1200)
+    display = (800, 1300)
     screen = pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LuoTianyi-Agent")
     
@@ -149,13 +567,13 @@ def main():
     font = pygame.font.Font("xiangqiaolaiwanlingganti.ttf", 36)  # None使用默认字体，36是字体大小
 
     if live2d.LIVE2D_VERSION == 3:
-        live2d.glewInit()
+        live2d.glInit()
 
     model = live2d.LAppModel()
 
 
     model.LoadModelJson(
-        os.path.join(resources.RESOURCES_DIRECTORY, "hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json")
+        os.path.join(resources.RESOURCES_DIRECTORY, "luotianyi/runtime/luotianyi.model3.json")
         # os.path.join(resources.RESOURCES_DIRECTORY, "miku/runtime/miku.model3.json")
     )
 
@@ -169,7 +587,7 @@ def main():
             self.dx = 0.0
             self.dy = 0.0
             self.target_dx = 0.0
-            self.target_dy = -1.0
+            self.target_dy = -1.2
             self.move_speed = 0.1  # 移动速度系数
 
         def smooth_move_to(self, nx: float, ny: float):
@@ -210,6 +628,7 @@ def main():
     text_input_cursor_timer = 0  # 光标闪烁计时器
     text_input_font = pygame.font.Font("xiangqiaolaiwanlingganti.ttf", 32)  # 输入框字体
     text_composition = ""  # 输入法组合文本（用于中文输入法）
+    show_text_input = False  # 是否显示文本输入框（默认隐藏）
     
     # 模型回复文本相关变量
     current_model_text = ""  # 模型当前正在说的话
@@ -241,6 +660,10 @@ def main():
 
     response_processor = ResponseProcessor(GetReply_emotion_content)
     response_processor.start_processing()
+    
+    # 语音识别累积相关变量
+    speech_accumulation_buffer = []  # 累积的语音识别结果（从上一次提交到现在）
+    last_speech_submission_time = 0  # 上次提交语音的时间
 
     def wrap_text(text, font, max_width):
         """将文本分割成多行，每行不超过最大宽度"""
@@ -318,21 +741,28 @@ def main():
         """根据情绪播放对应的动作"""
         if emotion == "happy":
             try:
-                model.StartMotion("FlickUp", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
+                model.StartMotion("Smile", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
             except Exception as e:
                 print(f"Failed to play emotion motion: {e}")
                 # 如果特定动作播放失败，播放随机动作
                 model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
-        elif emotion == "shy":
+        elif emotion == "surprise":
             try:
-                model.StartMotion("Flick", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
+                model.StartMotion("Surprise", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
+            except Exception as e:
+                print(f"Failed to play emotion motion: {e}")
+                # 如果特定动作播放失败，播放随机动作
+                model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
+        elif emotion == "angry":
+            try:
+                model.StartMotion("Angry", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
             except Exception as e:
                 print(f"Failed to play emotion motion: {e}")
                 # 如果特定动作播放失败，播放随机动作
                 model.StartRandomMotion(priority=3, onFinishMotionHandler=on_finish_motion_callback)
         elif emotion == "sad":
             try:
-                model.StartMotion("FlickDown", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
+                model.StartMotion("Sad", 0, priority=3, onFinishMotionHandler=on_finish_motion_callback)
             except Exception as e:
                 print(f"Failed to play emotion motion: {e}")
                 # 如果特定动作播放失败，播放随机动作
@@ -350,6 +780,7 @@ def main():
                 is_speaking = True
                 all_voices_finished = False  # 开始播放歌曲，标记为未完成
                 current_song_playing = song_name
+                # 注意：已经在play_next_voice中暂停了识别，这里不需要再次暂停
                 # 使用audio_player播放歌曲，支持口型同步
                 current_wav_handler, current_lip_sync_n = audio_player.play_audio_with_lipsync(model, song_path)
                 print(f"开始播放歌曲（带口型同步）: {song_name}")
@@ -361,6 +792,11 @@ def main():
         if voice_queue and not is_speaking and current_song_playing is None:
             is_speaking = True
             all_voices_finished = False  # 开始播放语音，标记为未完成
+            
+            # 立即暂停语音识别，避免识别自己的语音
+            voice_listener.pause_recognition()
+            print(f"开始播放语音，暂停语音识别")
+            
             next_item, emotion = voice_queue.pop(0)  # voice_queue中存储(文件路径, 情绪)元组
             print(f"Playing: {next_item} with emotion: {emotion}")
             print(f"Voice queue length after pop: {len(voice_queue)}")
@@ -452,16 +888,18 @@ def main():
             
             # 处理键盘事件
             if event.type == pygame.KEYDOWN:
-                # Tab键切换输入框激活状态
+                # Tab键切换输入框显示状态
                 if event.key == pygame.K_TAB:
-                    text_input_active = not text_input_active
-                    if text_input_active:
-                        print("文本输入框已激活")
+                    show_text_input = not show_text_input
+                    if show_text_input:
+                        print("文本输入框已显示")
+                        text_input_active = True
                     else:
-                        print("文本输入框已取消激活")
+                        print("文本输入框已隐藏")
+                        text_input_active = False
                 
                 # 如果输入框激活，处理特殊键
-                if text_input_active:
+                if text_input_active and show_text_input:
                     if event.key == pygame.K_RETURN:
                         # 提交文本
                         if text_input_string.strip():
@@ -487,7 +925,8 @@ def main():
                         if not text_composition:
                             text_input_string = text_input_string[:-1]
                     elif event.key == pygame.K_ESCAPE:
-                        # ESC键取消激活
+                        # ESC键隐藏输入框
+                        show_text_input = False
                         text_input_active = False
             
             # 处理文本编辑事件（输入法组合文本）
@@ -545,6 +984,13 @@ def main():
                     all_voices_finished = True
                     current_model_text = ""
                     print(f"歌曲播放结束，设置all_voices_finished={all_voices_finished}")
+                    # 恢复语音识别
+                    voice_listener.resume_recognition()
+                    print(f"歌曲播放结束，恢复语音识别")
+                else:
+                    # 普通语音播放结束，恢复语音识别
+                    voice_listener.resume_recognition()
+                    print(f"语音播放结束，恢复语音识别")
                 # 继续播放队列中的下一个
                 print(f"音频播放结束，调用play_next_voice()，is_speaking={is_speaking}, current_song_playing={current_song_playing}")
                 play_next_voice()
@@ -585,26 +1031,73 @@ def main():
                         voice_queue.append((item, 'none'))
                 play_next_voice()
             
-            # 在没有说话时，如果有累积的语音则处理
+            # 在没有说话时，处理累积的语音识别结果
             accumulated_input = voice_listener.get_accumulated_voice()
+            
             if accumulated_input:
-                print("Processing accumulated input:", accumulated_input)
-                # 添加到处理队列
-                response_processor.add_user_input(accumulated_input)
-                # 更新显示文本
-                current_user_text = accumulated_input
+                # 将新的识别结果添加到累积缓冲区（从上一次提交到现在）
+                speech_accumulation_buffer.append(accumulated_input)
+                print(f"[MAIN] 添加到累积缓冲区: {accumulated_input}")
+                print(f"[MAIN] 当前累积缓缓冲区: {speech_accumulation_buffer}")
+            
+            # 检查是否需要提交累积的语音
+            # 简单逻辑：只要有累积的语音，就提交
+            if speech_accumulation_buffer:
+                submission_text = " ".join(speech_accumulation_buffer)
+                print(f"[MAIN] 提交累积语音输入（从上一次提交到现在）: {submission_text}")
+                
+                # 修正语音识别结果
+                corrected_text = correct_speech_input(submission_text)
+                print(f"[MAIN] 修正后的文本: {corrected_text}")
+                
+                # 添加到处理队列（使用修正后的文本）
+                response_processor.add_user_input(corrected_text)
+                # 更新显示文本（显示修正后的结果）
+                current_user_text = corrected_text
                 text_display_time = time.time()
+                # 为用户输入启动打字机效果
+                typing_target_text = corrected_text
+                typing_text = ""
+                typing_start_time = time.time()
+                typing_active = True
+                typing_for_model = False
+                # 初始化显示单元
+                typing_display_units = split_text_to_display_units(typing_target_text)
+                typing_current_unit_index = 0
+                # 清空累积缓冲区（准备下一次累积）
+                speech_accumulation_buffer.clear()
+                # 更新上次提交时间
+                last_speech_submission_time = time.time()
+                print(f"[MAIN] 已提交并清空缓冲区，等待下一次累积")
         elif current_wav_handler and current_wav_handler.is_near_end():
-            # 在语音即将结束时，也检查累积的语音
+            # 在语音即将结束时，也检查是否有累积的语音
             accumulated_input = voice_listener.get_accumulated_voice()
+            
             if accumulated_input:
-                print("Processing accumulated input (near end):", accumulated_input)
-                # 添加到处理队列
-                response_processor.add_user_input(accumulated_input)
+                # 将新的识别结果添加到累积缓缓冲区
+                speech_accumulation_buffer.append(accumulated_input)
+                print(f"[MAIN] 语音即将结束，添加到累积缓冲区: {accumulated_input}")
+            
+            # 如果有累积的语音，提交
+            if speech_accumulation_buffer:
+                submission_text = " ".join(speech_accumulation_buffer)
+                print(f"[MAIN] 语音即将结束，提交累积语音输入: {submission_text}")
+                
+                # 修正语音识别结果
+                corrected_text = correct_speech_input(submission_text)
+                print(f"[MAIN] 修正后的文本: {corrected_text}")
+                
+                # 添加到处理队列（使用修正后的文本）
+                response_processor.add_user_input(corrected_text)
+                # 清空累积缓冲区
+                speech_accumulation_buffer.clear()
+                # 更新上次提交时间
+                last_speech_submission_time = time.time()
 
         model.SetOffset(dx, dy)
         model.SetScale(scale)
-        live2d.clearBuffer(0.0, 0.0, 0.0, 1.0)  # RGBA: 黑色背景，完全不透明
+        # live2d.clearBuffer(0.0, 0.0, 0.0, 1.0)  # RGBA: 黑色背景，完全不透明
+        live2d.clearBuffer(0.0, 1.0, 0.0, 1.0)  # RGBA: 绿色背景，完全不透明
         model.Draw()
 
         # 更新打字机效果
@@ -736,157 +1229,158 @@ def main():
             glMatrixMode(GL_MODELVIEW)
             glPopMatrix()
 
-        # 渲染文本输入框
-        # 更新光标闪烁计时器
-        text_input_cursor_timer += 1
-        if text_input_cursor_timer >= 30:  # 每30帧闪烁一次（约0.5秒）
-            text_input_cursor_timer = 0
-            text_input_cursor_visible = not text_input_cursor_visible
-        
-        # 清除深度缓冲
-        glClear(GL_DEPTH_BUFFER_BIT)
-        
-        # 切换到正交投影用于2D渲染
-        glMatrixMode(GL_PROJECTION)
-        glPushMatrix()
-        glLoadIdentity()
-        glOrtho(0, display[0], display[1], 0, -1, 1)
-        
-        glMatrixMode(GL_MODELVIEW)
-        glPushMatrix()
-        glLoadIdentity()
-        
-        # 输入框参数
-        input_box_width = display[0] - 40
-        line_height = 40  # 每行高度
-        min_height = 60   # 最小高度
-        padding_top = 10  # 顶部内边距
-        padding_bottom = 10  # 底部内边距
-        
-        # 准备显示的文本（包括组合文本）
-        display_text = text_input_string + text_composition
-        if text_input_active and text_input_cursor_visible:
-            display_text += "|"  # 光标
-        
-        # 使用wrap_text函数将文本分割成多行
-        max_text_width = input_box_width - 20  # 留出左右边距
-        lines = wrap_text(display_text, text_input_font, max_text_width)
-        
-        # 计算输入框高度（基于行数）
-        num_lines = max(1, len(lines))  # 至少1行
-        input_box_height = min_height
-        if num_lines > 1:
-            input_box_height = padding_top + (num_lines * line_height) + padding_bottom
-        
-        # 确保输入框不会超出屏幕
-        max_height = display[1] - 100  # 屏幕高度减去顶部留空
-        input_box_height = min(input_box_height, max_height)
-        
-        # 计算输入框Y位置（保持在屏幕底部）
-        input_box_y = display[1] - input_box_height - 20
-        
-        # 绘制输入框背景
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glColor4f(0.2, 0.2, 0.2, 0.7)  # 半透明深灰色背景
-        glBegin(GL_QUADS)
-        glVertex2f(20, input_box_y)
-        glVertex2f(20 + input_box_width, input_box_y)
-        glVertex2f(20 + input_box_width, input_box_y + input_box_height)
-        glVertex2f(20, input_box_y + input_box_height)
-        glEnd()
-        
-        # 绘制边框
-        if text_input_active:
-            glColor4f(0.4, 0.8, 1.0, 1.0)  # 激活时蓝色边框
-        else:
-            glColor4f(0.5, 0.5, 0.5, 1.0)  # 非激活时灰色边框
-        
-        glLineWidth(2.0)
-        glBegin(GL_LINE_LOOP)
-        glVertex2f(20, input_box_y)
-        glVertex2f(20 + input_box_width, input_box_y)
-        glVertex2f(20 + input_box_width, input_box_y + input_box_height)
-        glVertex2f(20, input_box_y + input_box_height)
-        glEnd()
-        
-        # 绘制输入文本（多行）
-        if display_text or text_input_active:
-            # 渲染每一行文本
-            for i, line in enumerate(lines):
-                if not line:  # 跳过空行
-                    continue
+        # 渲染文本输入框（仅在show_text_input为True时显示）
+        if show_text_input:
+            # 更新光标闪烁计时器
+            text_input_cursor_timer += 1
+            if text_input_cursor_timer >= 30:  # 每30帧闪烁一次（约0.5秒）
+                text_input_cursor_timer = 0
+                text_input_cursor_visible = not text_input_cursor_visible
+            
+            # 清除深度缓冲
+            glClear(GL_DEPTH_BUFFER_BIT)
+            
+            # 切换到正交投影用于2D渲染
+            glMatrixMode(GL_PROJECTION)
+            glPushMatrix()
+            glLoadIdentity()
+            glOrtho(0, display[0], display[1], 0, -1, 1)
+            
+            glMatrixMode(GL_MODELVIEW)
+            glPushMatrix()
+            glLoadIdentity()
+            
+            # 输入框参数
+            input_box_width = display[0] - 40
+            line_height = 40  # 每行高度
+            min_height = 60   # 最小高度
+            padding_top = 10  # 顶部内边距
+            padding_bottom = 10  # 底部内边距
+            
+            # 准备显示的文本（包括组合文本）
+            display_text = text_input_string + text_composition
+            if text_input_active and text_input_cursor_visible:
+                display_text += "|"  # 光标
+            
+            # 使用wrap_text函数将文本分割成多行
+            max_text_width = input_box_width - 20  # 留出左右边距
+            lines = wrap_text(display_text, text_input_font, max_text_width)
+            
+            # 计算输入框高度（基于行数）
+            num_lines = max(1, len(lines))  # 至少1行
+            input_box_height = min_height
+            if num_lines > 1:
+                input_box_height = padding_top + (num_lines * line_height) + padding_bottom
+            
+            # 确保输入框不会超出屏幕
+            max_height = display[1] - 100  # 屏幕高度减去顶部留空
+            input_box_height = min(input_box_height, max_height)
+            
+            # 计算输入框Y位置（保持在屏幕底部）
+            input_box_y = display[1] - input_box_height - 20
+            
+            # 绘制输入框背景
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glColor4f(0.2, 0.2, 0.2, 0.7)  # 半透明深灰色背景
+            glBegin(GL_QUADS)
+            glVertex2f(20, input_box_y)
+            glVertex2f(20 + input_box_width, input_box_y)
+            glVertex2f(20 + input_box_width, input_box_y + input_box_height)
+            glVertex2f(20, input_box_y + input_box_height)
+            glEnd()
+            
+            # 绘制边框
+            if text_input_active:
+                glColor4f(0.4, 0.8, 1.0, 1.0)  # 激活时蓝色边框
+            else:
+                glColor4f(0.5, 0.5, 0.5, 1.0)  # 非激活时灰色边框
+            
+            glLineWidth(2.0)
+            glBegin(GL_LINE_LOOP)
+            glVertex2f(20, input_box_y)
+            glVertex2f(20 + input_box_width, input_box_y)
+            glVertex2f(20 + input_box_width, input_box_y + input_box_height)
+            glVertex2f(20, input_box_y + input_box_height)
+            glEnd()
+            
+            # 绘制输入文本（多行）
+            if display_text or text_input_active:
+                # 渲染每一行文本
+                for i, line in enumerate(lines):
+                    if not line:  # 跳过空行
+                        continue
+                        
+                    # 计算当前行的Y位置
+                    line_y = input_box_y + padding_top + (i * line_height)
                     
-                # 计算当前行的Y位置
-                line_y = input_box_y + padding_top + (i * line_height)
-                
-                # 创建文本surface
-                text_surface = text_input_font.render(line, True, (255, 255, 255))
-                # 创建透明背景的surface
-                text_bg_surface = pygame.Surface(text_surface.get_size(), pygame.SRCALPHA)
-                text_bg_surface.blit(text_surface, (0, 0))
-                text_rect = text_bg_surface.get_rect(midleft=(30, line_y + line_height//2))
-                
-                # 启用2D纹理
-                glEnable(GL_TEXTURE_2D)
-                
-                # 创建纹理
-                texture_data = pygame.image.tostring(text_bg_surface, "RGBA", True)
-                texture = glGenTextures(1)
-                glBindTexture(GL_TEXTURE_2D, texture)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, text_bg_surface.get_width(), text_bg_surface.get_height(),
-                            0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
-                # 设置纹理参数
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-                
-                # 绘制文本纹理，修正纹理坐标以匹配倒置的Y坐标
-                glBegin(GL_QUADS)
-                glTexCoord2f(0, 1); glVertex2f(text_rect.left, text_rect.top)
-                glTexCoord2f(1, 1); glVertex2f(text_rect.right, text_rect.top)
-                glTexCoord2f(1, 0); glVertex2f(text_rect.right, text_rect.bottom)
-                glTexCoord2f(0, 0); glVertex2f(text_rect.left, text_rect.bottom)
-                glEnd()
-                
-                # 清理纹理
-                glDeleteTextures([texture])
-                glDisable(GL_TEXTURE_2D)
-        
-        # 绘制提示文本
-        prompt_text = "按Tab键激活/取消激活文本输入框"
-        if text_input_active:
-            prompt_text = "输入文本后按回车键发送，ESC键取消激活"
-        
-        prompt_surface = text_input_font.render(prompt_text, True, (200, 200, 200))
-        prompt_bg_surface = pygame.Surface(prompt_surface.get_size(), pygame.SRCALPHA)
-        prompt_bg_surface.blit(prompt_surface, (0, 0))
-        prompt_rect = prompt_bg_surface.get_rect(midleft=(30, input_box_y - 15))
-        
-        glEnable(GL_TEXTURE_2D)
-        prompt_texture_data = pygame.image.tostring(prompt_bg_surface, "RGBA", True)
-        prompt_texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, prompt_texture)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, prompt_bg_surface.get_width(), prompt_bg_surface.get_height(),
-                    0, GL_RGBA, GL_UNSIGNED_BYTE, prompt_texture_data)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        
-        glBegin(GL_QUADS)
-        glTexCoord2f(0, 1); glVertex2f(prompt_rect.left, prompt_rect.top)
-        glTexCoord2f(1, 1); glVertex2f(prompt_rect.right, prompt_rect.top)
-        glTexCoord2f(1, 0); glVertex2f(prompt_rect.right, prompt_rect.bottom)
-        glTexCoord2f(0, 0); glVertex2f(prompt_rect.left, prompt_rect.bottom)
-        glEnd()
-        
-        glDeleteTextures([prompt_texture])
-        glDisable(GL_TEXTURE_2D)
-        glDisable(GL_BLEND)
-        
-        # 恢复之前的投影矩阵
-        glMatrixMode(GL_PROJECTION)
-        glPopMatrix()
-        glMatrixMode(GL_MODELVIEW)
-        glPopMatrix()
+                    # 创建文本surface
+                    text_surface = text_input_font.render(line, True, (255, 255, 255))
+                    # 创建透明背景的surface
+                    text_bg_surface = pygame.Surface(text_surface.get_size(), pygame.SRCALPHA)
+                    text_bg_surface.blit(text_surface, (0, 0))
+                    text_rect = text_bg_surface.get_rect(midleft=(30, line_y + line_height//2))
+                    
+                    # 启用2D纹理
+                    glEnable(GL_TEXTURE_2D)
+                    
+                    # 创建纹理
+                    texture_data = pygame.image.tostring(text_bg_surface, "RGBA", True)
+                    texture = glGenTextures(1)
+                    glBindTexture(GL_TEXTURE_2D, texture)
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, text_bg_surface.get_width(), text_bg_surface.get_height(),
+                                0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
+                    # 设置纹理参数
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+                    
+                    # 绘制文本纹理，修正纹理坐标以匹配倒置的Y坐标
+                    glBegin(GL_QUADS)
+                    glTexCoord2f(0, 1); glVertex2f(text_rect.left, text_rect.top)
+                    glTexCoord2f(1, 1); glVertex2f(text_rect.right, text_rect.top)
+                    glTexCoord2f(1, 0); glVertex2f(text_rect.right, text_rect.bottom)
+                    glTexCoord2f(0, 0); glVertex2f(text_rect.left, text_rect.bottom)
+                    glEnd()
+                    
+                    # 清理纹理
+                    glDeleteTextures([texture])
+                    glDisable(GL_TEXTURE_2D)
+            
+            # 绘制提示文本
+            prompt_text = "按Tab键显示/隐藏文本输入框"
+            if text_input_active:
+                prompt_text = "输入文本后按回车键发送，ESC键隐藏输入框"
+            
+            prompt_surface = text_input_font.render(prompt_text, True, (200, 200, 200))
+            prompt_bg_surface = pygame.Surface(prompt_surface.get_size(), pygame.SRCALPHA)
+            prompt_bg_surface.blit(prompt_surface, (0, 0))
+            prompt_rect = prompt_bg_surface.get_rect(midleft=(30, input_box_y - 15))
+            
+            glEnable(GL_TEXTURE_2D)
+            prompt_texture_data = pygame.image.tostring(prompt_bg_surface, "RGBA", True)
+            prompt_texture = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, prompt_texture)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, prompt_bg_surface.get_width(), prompt_bg_surface.get_height(),
+                        0, GL_RGBA, GL_UNSIGNED_BYTE, prompt_texture_data)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            
+            glBegin(GL_QUADS)
+            glTexCoord2f(0, 1); glVertex2f(prompt_rect.left, prompt_rect.top)
+            glTexCoord2f(1, 1); glVertex2f(prompt_rect.right, prompt_rect.top)
+            glTexCoord2f(1, 0); glVertex2f(prompt_rect.right, prompt_rect.bottom)
+            glTexCoord2f(0, 0); glVertex2f(prompt_rect.left, prompt_rect.bottom)
+            glEnd()
+            
+            glDeleteTextures([prompt_texture])
+            glDisable(GL_TEXTURE_2D)
+            glDisable(GL_BLEND)
+            
+            # 恢复之前的投影矩阵
+            glMatrixMode(GL_PROJECTION)
+            glPopMatrix()
+            glMatrixMode(GL_MODELVIEW)
+            glPopMatrix()
         
         pygame.display.flip()
         pygame.time.wait(10)

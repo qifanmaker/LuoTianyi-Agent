@@ -1,5 +1,26 @@
 {
     "API_KEY": "PUSH API KEY HERE",
     "BASE_URL": "PUSH BASE URL HERE",
-    "MODEL": "PUSH MODEL HERE"
+    "MODEL": "PUSH MODEL HERE",
+    "TEXT_MODEL": "PUSH TEXT MODEL HERE",
+    "GSV_API": "http://localhost:9872",
+    "VOICE_MODEL": "vosk-model-small-cn-0.22",
+    "SPEECH_RECOGNITION": {
+        "service": "vosk",
+        "audio_source": "system",
+        "system_audio_device": "BlackHole 2ch",
+        "energy_threshold": 10,
+        "min_speech_duration": 2.0,
+        "silence_duration": 1.5
+    },
+    "TENCENT": {
+        "secret_id": "YOUR_SECRET_ID",
+        "secret_key": "YOUR_SECRET_KEY"
+    },
+    "TENCENT_COS": {
+        "region": "ap-beijing",
+        "bucket": "your-bucket-name-1250000000",
+        "upload_enabled": false,
+        "upload_path": "screenshots/"
+    }
 }

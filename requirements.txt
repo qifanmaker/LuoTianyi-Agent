@@ -7,3 +7,16 @@ PyOpenGL
 live2d-py
 gradio_client
 pygame
+opencv-python
+pillow
+pyautogui
+pywin32
+langchain
+langchain-classic
+langchain-openai
+langchain-community
+sounddevice
+vosk
+tencentcloud-sdk-python-common
+tencentcloud-sdk-python-wsa
+scipy

@@ -2,9 +2,13 @@ import threading
 import queue
 from typing import List, Tuple, Optional
 import requests
-import os
+import os, json
 import re
 import tianyi_voice
+
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+GSV_API = config.get("GSV_API")
 
 class ResponseProcessor:
     def __init__(self, llm_callback, voice_save_dir="voices", song_save_dir="songs"):
@@ -115,7 +119,7 @@ class ResponseProcessor:
                     if content and content.strip():
                         # 生成content的语音文件
                         voice_url = tianyi_voice.GetVoice(content.strip())
-                        r = requests.get(f'http://localhost:9872/file={voice_url}')
+                        r = requests.get(f'{GSV_API}/file={voice_url}')
                         r.raise_for_status()
                         filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
                         with open(filename, "wb") as f:
@@ -152,7 +156,7 @@ class ResponseProcessor:
                             if content and content.strip():
                                 # 生成content的语音文件
                                 voice_url = tianyi_voice.GetVoice(content.strip())
-                                r = requests.get(f'http://localhost:9872/file={voice_url}')
+                                r = requests.get(f'{GSV_API}/file={voice_url}')
                                 r.raise_for_status()
                                 filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
                                 with open(filename, "wb") as f:
@@ -188,7 +192,7 @@ class ResponseProcessor:
                                 voice_data.append((filename, mood))
                             else:
                                 voice_url = tianyi_voice.GetVoice(part.strip())
-                                r = requests.get(f'http://localhost:9872/file={voice_url}')
+                                r = requests.get(f'{GSV_API}/file={voice_url}')
                                 r.raise_for_status()
                                 filename = os.path.join(self.voice_save_dir, f"{i:03d}_{len(voice_data):02d}_{mood}.wav")
                                 with open(filename, "wb") as f:
@@ -214,7 +218,7 @@ class ResponseProcessor:
                         voice_data.append((filename, emotion))
                     else:
                         voice_url = tianyi_voice.GetVoice(part.strip())
-                        r = requests.get(f'http://localhost:9872/file={voice_url}')
+                        r = requests.get(f'{GSV_API}/file={voice_url}')
                         r.raise_for_status()
                         filename = os.path.join(self.voice_save_dir, f"000_{len(voice_data):02d}_{emotion}.wav")
                         with open(filename, "wb") as f:
